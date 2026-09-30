@@ -12,7 +12,6 @@ from SevenSegmentMonitor.settings import DB_FILE, CLEANUP_TIMEOUT, CLEANUP_PERIO
 
 logger = logging.getLogger(__name__)
 
-
 INSERT_EVENTS_DATA_SQL = """ 
                     INSERT INTO events (timestamp, state, raw_data)
                     VALUES (?, ?, ?)
@@ -34,7 +33,6 @@ def get_db_connection(db_path: Path | None = None):
         conn.close()
 
 
-
 def init_db(db_path: Path | None = None) -> None:
     with get_db_connection(db_path) as db:
         db.execute(
@@ -53,8 +51,8 @@ def init_db(db_path: Path | None = None) -> None:
 
 
 def db_writer_worker_thread(
-    db_queue: queue.Queue, shutdown_event: Event,
-    db_path: Path | None = None,
+        db_queue: queue.Queue, shutdown_event: Event,
+        db_path: Path | None = None,
 ) -> None:
     init_db(db_path)
     logger.info(f"[DB] Worker is ready")
@@ -81,7 +79,7 @@ def db_cleanup(cutoff_timestamp: float, db_path: Path | None = None) -> int:
         return cursor.rowcount
 
 
-def db_cleanup_worker(shutdown_event: Event, db_path: Path | None = None, cleanup_timeout=None):
+def db_cleanup_worker_thread(shutdown_event: Event, db_path: Path | None = None, cleanup_timeout=None):
     cleanup_timeout = cleanup_timeout or CLEANUP_TIMEOUT
     cleanup_period = datetime.timedelta(days=CLEANUP_PERIOD_DAYS).total_seconds()
 
@@ -93,7 +91,7 @@ def db_cleanup_worker(shutdown_event: Event, db_path: Path | None = None, cleanu
     while not shutdown_event.is_set():
         try:
             cutoff_timestamp = time.time() - cleanup_period
-            deleted_count =  db_cleanup(cutoff_timestamp, db_path)
+            deleted_count = db_cleanup(cutoff_timestamp, db_path)
 
             if deleted_count:
                 logger.info(f"[DB] Cleanup finished. Deleted {deleted_count} old sensor records.")

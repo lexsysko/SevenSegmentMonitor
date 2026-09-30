@@ -166,13 +166,13 @@ def vision_worker_thread(frame_queue: Queue, db_queue: Queue, stop_event: Event)
             # cv2.waitKey is REQUIRED for cv2.imshow to update the window frame
             # Pressing 'q' signals all threads to stop
             if cv2.waitKey(1) & 0xFF == ord("q"):
-                print("Quit signal received from OpenCV GUI.")
+                logger.info("Quit signal received from OpenCV GUI.")
                 stop_event.set()
                 break
         else:
             readout = process_frame(frame)
 
-        logger.debug(f"{readout=}")
+        # logger.debug(f"{readout=}")
 
         if readout and "?" not in readout and readout != last_detected:
             last_detected = readout
@@ -241,29 +241,36 @@ def process_and_annotate(frame):
             M = cv2.getPerspectiveTransform(src, dst)
             warped = cv2.warpPerspective(red_mask, M, (width, height))
 
-            # 3. Apply Un-shear (Deskew internal slant)
-            warped = deskew_crop(warped, shear_angle=8)
+            aspect_ratio = height / float(width)
+            # print(f"{i}, {x=}, {y=}, {w=}, {h=}, {width=}, {height=}, {aspect_ratio=}")
 
-            # 4. Check Segment Densities
-            segments_rel = [
-                (0.20, 0.00, 0.60, 0.20),  # Top
-                (0.65, 0.15, 0.35, 0.35),  # Top-Right
-                (0.65, 0.50, 0.35, 0.35),  # Bottom-Right
-                (0.20, 0.80, 0.60, 0.20),  # Bottom
-                (0.00, 0.50, 0.35, 0.35),  # Bottom-Left
-                (0.00, 0.15, 0.35, 0.35),  # Top-Left
-                (0.20, 0.40, 0.60, 0.20),  # Middle
-            ]
+            if aspect_ratio >= 3.0:
+                digit_char = "1"
+            else:
+                # 3. Apply Un-shear (Deskew internal slant)
+                warped = deskew_crop(warped, shear_angle=8)
 
-            states = []
-            for rx, ry, rw, rh in segments_rel:
-                sx, sy = int(rx * width), int(ry * height)
-                sw, sh = max(1, int(rw * width)), max(1, int(rh * height))
-                seg_crop = warped[sy:sy + sh, sx:sx + sw]
-                pixel_density = np.count_nonzero(seg_crop) / float(sw * sh)
-                states.append(1 if pixel_density > 0.20 else 0)
+                # 4. Check Segment Densities
+                segments_rel = [
+                    (0.20, 0.00, 0.60, 0.20),  # Top
+                    (0.65, 0.15, 0.35, 0.35),  # Top-Right
+                    (0.65, 0.50, 0.35, 0.35),  # Bottom-Right
+                    (0.20, 0.80, 0.60, 0.20),  # Bottom
+                    (0.00, 0.50, 0.35, 0.35),  # Bottom-Left
+                    (0.00, 0.15, 0.35, 0.35),  # Top-Left
+                    (0.20, 0.40, 0.60, 0.20),  # Middle
+                ]
 
-            digit_char = DIGIT_MAP.get(tuple(states), "?")
+                states = []
+                for rx, ry, rw, rh in segments_rel:
+                    sx, sy = int(rx * width), int(ry * height)
+                    sw, sh = max(1, int(rw * width)), max(1, int(rh * height))
+                    seg_crop = warped[sy:sy + sh, sx:sx + sw]
+                    pixel_density = np.count_nonzero(seg_crop) / float(sw * sh)
+                    states.append(1 if pixel_density > 0.20 else 0)
+
+                digit_char = DIGIT_MAP.get(tuple(states), "?")
+
             digit_data.append((x, y, w, h, digit_char))
 
     digit_data = sorted(digit_data, key=lambda d: (d[1] // 30, d[0]))

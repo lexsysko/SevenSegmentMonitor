@@ -6,9 +6,9 @@ import threading
 from pathlib import Path
 
 from SevenSegmentMonitor.handler_signal import setup_signal_handlers
-from SevenSegmentMonitor.services.db_writer_worker import db_writer_worker_thread
+from SevenSegmentMonitor.services.db_writer_worker import db_writer_worker_thread, db_cleanup_worker_thread
 from SevenSegmentMonitor.services.vision import camera_producer_thread, vision_worker_thread
-from SevenSegmentMonitor.settings import APP_VERSION
+from SevenSegmentMonitor.settings import APP_VERSION, LOGLEVEL
 
 
 def setup_logger(level: str | int = logging.INFO) -> logging.Logger:
@@ -34,8 +34,7 @@ def setup_logger(level: str | int = logging.INFO) -> logging.Logger:
     return log
 
 
-logger = setup_logger()
-
+logger = setup_logger(LOGLEVEL)
 
 
 # --- 5. MAIN ENTRY POINT ---
@@ -56,11 +55,13 @@ def main():
     # Create workers
     t_cam = threading.Thread(target=camera_producer_thread, args=(video_src, frame_queue, shutdown_event), daemon=True)
     t_vision = threading.Thread(target=vision_worker_thread, args=(frame_queue, db_queue, shutdown_event), daemon=True)
+    t_db_cleanup = threading.Thread(target=db_cleanup_worker_thread, args=(shutdown_event,), daemon=True)
     t_db_writer = threading.Thread(target=db_writer_worker_thread, args=(db_queue, shutdown_event), daemon=False)
 
     t_cam.start()
     t_vision.start()
     t_db_writer.start()
+    t_db_cleanup.start()
 
     logger.info("Multithreaded Headless Monitor Running...")
 
@@ -69,6 +70,7 @@ def main():
     except KeyboardInterrupt:
         logger.info("\nStopping threads...")
         shutdown_event.set()
+
 
 if __name__ == "__main__":
     main()
