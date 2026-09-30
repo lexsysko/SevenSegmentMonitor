@@ -122,11 +122,12 @@ def camera_producer_thread(video_src, frame_queue: Queue, stop_event: Event):
     logger.info(f"camera producer is ready. headless: {is_headless()}")
 
     cap = cv2.VideoCapture(video_src)
+    cap.set(cv2.CAP_PROP_FPS, 1)
     # Disable Auto-Exposure (V4L2 backend flags: 1 = manual mode, 3 = auto mode)
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-
-    # Manually set exposure (Try values between -10 and -3, or raw numbers like 20-100 depending on driver)
-    cap.set(cv2.CAP_PROP_EXPOSURE, -10)
+    # cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+    #
+    # # Manually set exposure (Try values between -10 and -3, or raw numbers like 20-100 depending on driver)
+    # cap.set(cv2.CAP_PROP_EXPOSURE, -10)
 
     while not stop_event.is_set():
         ret, frame = cap.read()
@@ -138,9 +139,10 @@ def camera_producer_thread(video_src, frame_queue: Queue, stop_event: Event):
             try:
                 frame_queue.get_nowait()
             except queue.Empty:
-                pass
+                ...
 
         frame_queue.put(frame)
+        time.sleep(1)
 
     cap.release()
 
@@ -185,75 +187,86 @@ def process_and_annotate(frame):
     """Processes segments, draws bounding boxes, and decodes digits."""
     # --- 1. PRE-PROCESSING: BLUR & DECREASE BRIGHTNESS ---
 
-    frame = rotate_frame(frame, 7)
+    frame = rotate_frame(frame, 5)
 
     # # Gaussian Blur: Adjust (5, 5) to (9, 9) if you need stronger smoothing
     # # blurred_frame = cv2.GaussianBlur(frame, (3, 3), 0)
     #
     # # Decrease Brightness: beta=-50 reduces intensity (value range: -255 to 0)
     # # alpha=1.0 keeps contrast unchanged
-    dimmed_frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=10)
+    dimmed_frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=-25)
     #
     # --- 2. HSV THRESHOLDING ON PRE-PROCESSED FRAME ---
     hsv = cv2.cvtColor(dimmed_frame, cv2.COLOR_BGR2HSV)
 
     lower_orange_red = np.array([0, 40, 216])
-    upper_orange_red = np.array([38, 241, 255])
+    upper_orange_red = np.array([179, 186, 255])
     mask_orange = cv2.inRange(hsv, lower_orange_red, upper_orange_red)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))
     red_mask = cv2.morphologyEx(mask_orange, cv2.MORPH_CLOSE, kernel)
 
     # red_mask = preprocess_overexposed_frame(frame)
 
     contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     digit_data = []
-
-    for cnt in contours:
+    # print("\n")
+    for i, cnt in enumerate(contours):
         x, y, w, h = cv2.boundingRect(cnt)
-        if w > 12 and h > 25 and (h / float(w)) > 1.0:
+        # print(i, x, y, w, h)
+        if w > 8 and h > 20 and (h / float(w)) > 0.8:
             rect = cv2.minAreaRect(cnt)
             box = cv2.boxPoints(rect).astype("float32")
 
-            s = box.sum(axis=1)
-            diff = np.diff(box, axis=1)
-            tl, br = box[np.argmin(s)], box[np.argmax(s)]
-            tr, bl = box[np.argmin(diff)], box[np.argmax(diff)]
+            # 1. Properly order perspective points
+            src = order_points(box)
 
+            # Determine width and height
+            (tl, tr, br, bl) = src
             width = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
             height = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
 
             if width < 5 or height < 5:
                 continue
 
-            src = np.array([tl, tr, br, bl], dtype="float32")
-            dst = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype="float32")
+            # Target dimensions (normalized digit box)
+            dst = np.array([
+                [0, 0],
+                [width - 1, 0],
+                [width - 1, height - 1],
+                [0, height - 1]
+            ], dtype="float32")
 
+            # 2. Warp Perspective
             M = cv2.getPerspectiveTransform(src, dst)
             warped = cv2.warpPerspective(red_mask, M, (width, height))
 
+            # 3. Apply Un-shear (Deskew internal slant)
+            warped = deskew_crop(warped, shear_angle=8)
+
+            # 4. Check Segment Densities
             segments_rel = [
-                (0.20, 0.00, 0.60, 0.20),
-                (0.70, 0.15, 0.30, 0.35),
-                (0.70, 0.50, 0.30, 0.35),
-                (0.20, 0.80, 0.60, 0.20),
-                (0.00, 0.50, 0.30, 0.35),
-                (0.00, 0.15, 0.30, 0.35),
-                (0.20, 0.40, 0.60, 0.20),
+                (0.20, 0.00, 0.60, 0.20),  # Top
+                (0.65, 0.15, 0.35, 0.35),  # Top-Right
+                (0.65, 0.50, 0.35, 0.35),  # Bottom-Right
+                (0.20, 0.80, 0.60, 0.20),  # Bottom
+                (0.00, 0.50, 0.35, 0.35),  # Bottom-Left
+                (0.00, 0.15, 0.35, 0.35),  # Top-Left
+                (0.20, 0.40, 0.60, 0.20),  # Middle
             ]
 
             states = []
             for rx, ry, rw, rh in segments_rel:
                 sx, sy = int(rx * width), int(ry * height)
                 sw, sh = max(1, int(rw * width)), max(1, int(rh * height))
-                seg_crop = warped[sy: sy + sh, sx: sx + sw]
+                seg_crop = warped[sy:sy + sh, sx:sx + sw]
                 pixel_density = np.count_nonzero(seg_crop) / float(sw * sh)
-                states.append(1 if pixel_density > 0.25 else 0)
+                states.append(1 if pixel_density > 0.20 else 0)
 
             digit_char = DIGIT_MAP.get(tuple(states), "?")
             digit_data.append((x, y, w, h, digit_char))
 
-    digit_data = sorted(digit_data, key=lambda d: d[0])
+    digit_data = sorted(digit_data, key=lambda d: (d[1] // 30, d[0]))
     readout_str = "".join([d[4] for d in digit_data])
 
     # Annotate frame
@@ -264,7 +277,7 @@ def process_and_annotate(frame):
     cv2.putText(
         frame,
         f"Readout: {readout_str if readout_str else 'Searching...'}",
-        (20, 40),
+        (20, frame.shape[0] - 20),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.0,
         (0, 255, 0),
