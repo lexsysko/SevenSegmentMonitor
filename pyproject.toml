@@ -1,11 +1,11 @@
 [project]
 name = "sevensegmentmonitor"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.13"
 dependencies = [
     "python-dotenv>=1.2.3",
-    "opencv-python-headless>=5.0.0.93; sys_platform == 'linux'",
-    "opencv-python>=5.0.0.93; sys_platform == 'darwin' or sys_platform == 'win32'",
+    "opencv-python-headless>=5.0.0; sys_platform == 'linux'",
+    "opencv-python>=5.0.0; sys_platform == 'darwin' or sys_platform == 'win32'",
 ]
 
 classifiers = [
@@ -13,7 +13,7 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
 ]
-keywords = ["python", "http", "monitoring", "sound analyser"]
+keywords = ["python", "http", "monitoring", "visual analyser"]
 
 [project.urls]
 Homepage = "https://github.com/lexsysko/SevenSegmentMonitor"

@@ -7,7 +7,8 @@ from pathlib import Path
 
 from SevenSegmentMonitor.handler_signal import setup_signal_handlers
 from SevenSegmentMonitor.services.db_writer_worker import db_writer_worker_thread, db_cleanup_worker_thread
-from SevenSegmentMonitor.services.vision import camera_producer_thread, vision_worker_thread
+from SevenSegmentMonitor.services.vision_worker import vision_worker_thread
+from SevenSegmentMonitor.services.camera_producer import camera_producer_thread
 from SevenSegmentMonitor.settings import APP_VERSION, LOGLEVEL
 
 

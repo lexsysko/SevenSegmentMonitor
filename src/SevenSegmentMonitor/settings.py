@@ -12,7 +12,6 @@ for folder in (Path.cwd(), BASE_PATH):
         load_dotenv()
         break
 
-
 data_path_str: str | None = environ.get("DATA_PATH")
 
 if data_path_str:
@@ -32,3 +31,7 @@ CLEANUP_TIMEOUT: int = int(environ.get("CLEANUP_TIMEOUT", 60 * 60 * 24))
 CLEANUP_PERIOD_DAYS: int = int(environ.get("CLEANUP_PERIOD_DAYS", 30))
 BATCH_FLUSH_DB_TIMEOUT: int = int(environ.get("BATCH_FLUSH_DB_TIMEOUT", 2))
 
+LOAD_FRAME: bool = environ.get("LOAD_FRAME", "f")[0].lower() == "t"
+SAVE_FRAME: bool = environ.get("SAVE_FRAME", "f")[0].lower() == "t"
+FRAME_NAME_PATH: Path = DATA_PATH / Path(environ.get("FRAME_NAME_PATH", "frame.png")).name
+FRAME_FPS_DELAY: float = float(environ.get("FRAME_FPS_DELAY", 1))

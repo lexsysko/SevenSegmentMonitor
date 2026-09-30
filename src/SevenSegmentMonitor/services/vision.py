@@ -1,11 +1,6 @@
-import logging
-import queue
-import time
-from queue import Queue
-from threading import Event
-
 import cv2
 import numpy as np
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -22,336 +17,196 @@ DIGIT_MAP = {
     (1, 1, 1, 1, 0, 1, 1): "9",
 }
 
-_is_headless = None
+# Relative segment windows (x, y, w, h) in 0..1
+# Order: a(top), b(top-right), c(bottom-right), d(bottom), e(bottom-left), f(top-left), g(middle)
+SEGMENTS_REL = [
+    (0.22, 0.02, 0.56, 0.15),  # a
+    (0.68, 0.12, 0.28, 0.32),  # b
+    (0.68, 0.52, 0.28, 0.32),  # c
+    (0.22, 0.83, 0.56, 0.15),  # d
+    (0.04, 0.52, 0.28, 0.32),  # e
+    (0.04, 0.12, 0.28, 0.32),  # f
+    (0.22, 0.42, 0.56, 0.15),  # g
+]
 
 
-def is_headless() -> bool:
-    global _is_headless
-    if _is_headless is None:
-        if logger.getEffectiveLevel() != logging.DEBUG:
-            _is_headless = False
-            return False
-        build_info = cv2.getBuildInformation()
-        # Headless builds explicitly state 'GUI: NONE' under the GUI section
-        _is_headless = "GUI:               NONE" in build_info or "GUI:" not in build_info
-    return _is_headless
-
-
-def rotate_frame(frame, angle=7.0):
-    """
-    Rotates a frame around its center by a specified angle in degrees.
-    Positive angle = Counter-Clockwise rotation.
-    Negative angle = Clockwise rotation.
-    """
+def rotate_frame(frame, angle=5.0):
     (h, w) = frame.shape[:2]
-    center = (w // 2, h // 2)
-
-    # 1. Obtain the 2D rotation matrix
-    # Arguments: center point, rotation angle (degrees), scale factor
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-
-    # 2. Perform the affine warp
-    # BORDER_REPLICATE prevents dark borders at frame edges after rotation
-    rotated = cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-
-    return rotated
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+    return cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
 
 
-def deskew_crop(crop, shear_angle=12):
-    """Deskews italicized 7-segment digits by shifting horizontal rows."""
-    h, w = crop.shape[:2]
+def deskew(mask, shear_angle=9.0):
+    """Constant horizontal shear to un-italicise the digits."""
+    h, w = mask.shape[:2]
     M = np.float32([
         [1, np.tan(np.radians(-shear_angle)), 0],
         [0, 1, 0]
     ])
-    # Shift center origin so cropping doesn't cut off edges
     M[0, 2] = -M[0, 1] * h / 2
-    return cv2.warpAffine(crop, M, (w, h), flags=cv2.INTER_LINEAR)
+    return cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_LINEAR)
 
 
-def order_points(pts):
-    """Sorts 4 coordinates in order: top-left, top-right, bottom-right, bottom-left."""
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]  # Top-left
-    rect[2] = pts[np.argmax(s)]  # Bottom-right
-
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]  # Top-right
-    rect[3] = pts[np.argmax(diff)]  # Bottom-left
-    return rect
+def make_red_mask(frame: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    m1 = cv2.inRange(hsv, (0, 40, 180), (18, 255, 255))
+    m2 = cv2.inRange(hsv, (160, 40, 180), (180, 255, 255))
+    mask = cv2.bitwise_or(m1, m2)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return mask
 
 
-def preprocess_overexposed_frame(frame: np.ndarray) -> np.ndarray:
+def is_probably_one(roi: np.ndarray) -> bool:
+    """Thin digit with almost all mass on the right side → '1'."""
+    h, w = roi.shape[:2]
+    if h < 10 or w < 4:
+        return False
+    if h / max(w, 1) > 2.3:
+        return True
+    mid = w // 2
+    left_d = cv2.countNonZero(roi[:, :mid]) / max(mid * h, 1)
+    right_d = cv2.countNonZero(roi[:, mid:]) / max((w - mid) * h, 1)
+    return right_d > 0.22 and left_d < 0.07
+
+
+def decode_digit(roi: np.ndarray, density_thresh: float = 0.18) -> str:
+    h, w = roi.shape[:2]
+    if h < 10 or w < 6:
+        return "?"
+
+    # ----- ignore decimal point area (right ~12 % of the slot) -----
+    usable_w = int(w * 0.88)
+    roi = roi[:, :usable_w]
+    h, w = roi.shape[:2]
+
+    # Optional upscale for very small digits
+    if h < 22:
+        roi = cv2.resize(roi, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+        h, w = roi.shape[:2]
+
+    if is_probably_one(roi):
+        return "1"
+
+    states = []
+    for rx, ry, rw, rh in SEGMENTS_REL:
+        x1 = int(rx * w)
+        y1 = int(ry * h)
+        x2 = min(w, x1 + max(1, int(rw * w)))
+        y2 = min(h, y1 + max(1, int(rh * h)))
+        seg = roi[y1:y2, x1:x2]
+        dens = cv2.countNonZero(seg) / float(seg.size) if seg.size else 0.0
+        states.append(1 if dens > density_thresh else 0)
+
+    return DIGIT_MAP.get(tuple(states), "?")
+
+
+def find_display_roi(mask: np.ndarray, min_area=800):
+    """Tight bounding box of the largest red blob (whole display)."""
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    cnt = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(cnt) < min_area:
+        return None
+    x, y, w, h = cv2.boundingRect(cnt)
+    pad = 4
+    x = max(0, x - pad)
+    y = max(0, y - pad)
+    w = min(mask.shape[1] - x, w + 2 * pad)
+    h = min(mask.shape[0] - y, h + 2 * pad)
+    return x, y, w, h
+
+
+def extract_digits_fixed_pitch(mask, display_roi, num_digits=6,
+                               char_width_ratio=0.130,
+                               gap_ratio=0.030):
     """
-    Recovers segment boundaries from severely overexposed LED displays.
+    Split the display into equal-width character slots.
+    Decimal points fall into the gaps or are cut by the 0.88 crop inside decode_digit.
     """
-    # Convert BGR to 16-bit to prevent arithmetic overflow/underflow
-    b, g, r = cv2.split(frame.astype(np.int16))
+    x, y, w, h = display_roi
+    char_w = int(w * char_width_ratio)
+    gap = int(w * gap_ratio)
+    total_w = num_digits * char_w + (num_digits - 1) * gap
+    start_x = x + max(0, (w - total_w) // 2)
 
-    # --- Step 1: Red Channel Dominance ---
-    # Blown-out centers have high R, G, B, but LED edges retain higher Red relative to Green/Blue.
-    # Subtracting the maximum of G/B eliminates ambient white light and background glare.
-    red_dominance = r - np.maximum(g, b)
-    red_dominance = np.clip(red_dominance, 0, 255).astype(np.uint8)
-
-    # --- Step 2: Non-Linear Gamma Compression ---
-    # Gamma < 1.0 sharply suppresses soft halo bloom while retaining high-intensity core pixels.
-    gamma = 0.35
-    inv_gamma = 1.0 / gamma
-    lut = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype(np.uint8)
-    gamma_corrected = cv2.LUT(red_dominance, lut)
-
-    # --- Step 3: Gentle Gaussian Blur ---
-    # Smooths high-frequency sensor noise before binarization
-    blurred = cv2.GaussianBlur(gamma_corrected, (3, 3), 0)
-
-    # --- Step 4: Otsu's Automatic Thresholding ---
-    # Computes optimal threshold dynamically based on histogram bimodality
-    _, binary_mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # --- Step 5: Morphological Erosion (Separate Fused Segments) ---
-    # Disconnects adjacent 7-segments that have bloomed together into single contours
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    eroded_mask = cv2.erode(binary_mask, kernel, iterations=1)
-
-    return eroded_mask
+    rois = []
+    boxes = []  # for drawing
+    for i in range(num_digits):
+        dx = start_x + i * (char_w + gap)
+        roi = mask[y:y + h, dx:dx + char_w]
+        rois.append(roi)
+        boxes.append((dx, y, char_w, h))
+    return rois, boxes
 
 
-def camera_producer_thread(video_src, frame_queue: Queue, stop_event: Event):
-    logger.info(f"camera producer is ready. headless: {is_headless()}")
-
-    cap = cv2.VideoCapture(video_src)
-    cap.set(cv2.CAP_PROP_FPS, 1)
-    # Disable Auto-Exposure (V4L2 backend flags: 1 = manual mode, 3 = auto mode)
-    # cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-    #
-    # # Manually set exposure (Try values between -10 and -3, or raw numbers like 20-100 depending on driver)
-    # cap.set(cv2.CAP_PROP_EXPOSURE, -10)
-
-    while not stop_event.is_set():
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            continue
-
-        # Drop oldest frame if worker falls behind
-        if frame_queue.full():
-            try:
-                frame_queue.get_nowait()
-            except queue.Empty:
-                ...
-
-        frame_queue.put(frame)
-        time.sleep(1)
-
-    cap.release()
-
-
-def vision_worker_thread(frame_queue: Queue, db_queue: Queue, stop_event: Event):
-    logger.info("vision worker is ready")
-    last_detected = None
-
-    while not stop_event.is_set():
-        try:
-            frame = frame_queue.get(timeout=1.0)
-        except queue.Empty:
-            continue
-
-        if not is_headless():
-            readout, frames = process_and_annotate(frame)
-            # Native GUI window rendering
-            for i, frame in enumerate(frames):
-                cv2.imshow(f"7-Segment Display Monitor ({i})", frame)
-
-            # cv2.waitKey is REQUIRED for cv2.imshow to update the window frame
-            # Pressing 'q' signals all threads to stop
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                logger.info("Quit signal received from OpenCV GUI.")
-                stop_event.set()
-                break
-        else:
-            readout = process_frame(frame)
-
-        # logger.debug(f"{readout=}")
-
-        if readout and "?" not in readout and readout != last_detected:
-            last_detected = readout
-            timestamp = time.time()
-            db_queue.put((timestamp, 1, readout))
-
-    if not is_headless():
-        cv2.destroyAllWindows()
-
+# ====================== public API ======================
 
 def process_and_annotate(frame):
-    """Processes segments, draws bounding boxes, and decodes digits."""
-    # --- 1. PRE-PROCESSING: BLUR & DECREASE BRIGHTNESS ---
+    """Full pipeline with visualisation (GUI path)."""
+    frame = rotate_frame(frame, angle=5.0)
+    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-20)
+    mask = make_red_mask(dimmed)
+    mask = deskew(mask, shear_angle=9.0)
 
-    frame = rotate_frame(frame, 5)
+    display_roi = find_display_roi(mask)
+    readout = ""
+    digit_boxes = []
 
-    # # Gaussian Blur: Adjust (5, 5) to (9, 9) if you need stronger smoothing
-    # # blurred_frame = cv2.GaussianBlur(frame, (3, 3), 0)
-    #
-    # # Decrease Brightness: beta=-50 reduces intensity (value range: -255 to 0)
-    # # alpha=1.0 keeps contrast unchanged
-    dimmed_frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=-25)
-    #
-    # --- 2. HSV THRESHOLDING ON PRE-PROCESSED FRAME ---
-    hsv = cv2.cvtColor(dimmed_frame, cv2.COLOR_BGR2HSV)
+    if display_roi is not None:
+        NUM_DIGITS = 6
+        rois, boxes = extract_digits_fixed_pitch(
+            mask, display_roi,
+            num_digits=NUM_DIGITS,
+            char_width_ratio=0.130,
+            gap_ratio=0.030
+        )
 
-    lower_orange_red = np.array([0, 40, 216])
-    upper_orange_red = np.array([179, 186, 255])
-    mask_orange = cv2.inRange(hsv, lower_orange_red, upper_orange_red)
+        chars = []
+        for i, roi in enumerate(rois):
+            ch = decode_digit(roi, density_thresh=0.18)
+            chars.append(ch)
+            x, y, w, h = boxes[i]
+            digit_boxes.append((x, y, w, h, ch))
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))
-    red_mask = cv2.morphologyEx(mask_orange, cv2.MORPH_CLOSE, kernel)
+        readout = "".join(chars)
 
-    # red_mask = preprocess_overexposed_frame(frame)
+    # ----- draw -----
+    vis = frame.copy()
+    if display_roi is not None:
+        x, y, w, h = display_roi
+        cv2.rectangle(vis, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
-    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    digit_data = []
-    # print("\n")
-    for i, cnt in enumerate(contours):
-        x, y, w, h = cv2.boundingRect(cnt)
-        # print(i, x, y, w, h)
-        if w > 8 and h > 20 and (h / float(w)) > 0.8:
-            rect = cv2.minAreaRect(cnt)
-            box = cv2.boxPoints(rect).astype("float32")
+    for (x, y, w, h, ch) in digit_boxes:
+        color = (0, 255, 0) if ch != "?" else (0, 0, 255)
+        cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+        cv2.putText(vis, ch, (x, y - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-            # 1. Properly order perspective points
-            src = order_points(box)
+    cv2.putText(vis, f"Readout: {readout or '…'}",
+                (20, vis.shape[0] - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
-            # Determine width and height
-            (tl, tr, br, bl) = src
-            width = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
-            height = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
-
-            if width < 5 or height < 5:
-                continue
-
-            # Target dimensions (normalized digit box)
-            dst = np.array([
-                [0, 0],
-                [width - 1, 0],
-                [width - 1, height - 1],
-                [0, height - 1]
-            ], dtype="float32")
-
-            # 2. Warp Perspective
-            M = cv2.getPerspectiveTransform(src, dst)
-            warped = cv2.warpPerspective(red_mask, M, (width, height))
-
-            aspect_ratio = height / float(width)
-            # print(f"{i}, {x=}, {y=}, {w=}, {h=}, {width=}, {height=}, {aspect_ratio=}")
-
-            if aspect_ratio >= 3.0:
-                digit_char = "1"
-            else:
-                # 3. Apply Un-shear (Deskew internal slant)
-                warped = deskew_crop(warped, shear_angle=8)
-
-                # 4. Check Segment Densities
-                segments_rel = [
-                    (0.20, 0.00, 0.60, 0.20),  # Top
-                    (0.65, 0.15, 0.35, 0.35),  # Top-Right
-                    (0.65, 0.50, 0.35, 0.35),  # Bottom-Right
-                    (0.20, 0.80, 0.60, 0.20),  # Bottom
-                    (0.00, 0.50, 0.35, 0.35),  # Bottom-Left
-                    (0.00, 0.15, 0.35, 0.35),  # Top-Left
-                    (0.20, 0.40, 0.60, 0.20),  # Middle
-                ]
-
-                states = []
-                for rx, ry, rw, rh in segments_rel:
-                    sx, sy = int(rx * width), int(ry * height)
-                    sw, sh = max(1, int(rw * width)), max(1, int(rh * height))
-                    seg_crop = warped[sy:sy + sh, sx:sx + sw]
-                    pixel_density = np.count_nonzero(seg_crop) / float(sw * sh)
-                    states.append(1 if pixel_density > 0.20 else 0)
-
-                digit_char = DIGIT_MAP.get(tuple(states), "?")
-
-            digit_data.append((x, y, w, h, digit_char))
-
-    digit_data = sorted(digit_data, key=lambda d: (d[1] // 30, d[0]))
-    readout_str = "".join([d[4] for d in digit_data])
-
-    # Annotate frame
-    for x, y, w, h, val in digit_data:
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        cv2.putText(frame, val, (x, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-
-    cv2.putText(
-        frame,
-        f"Readout: {readout_str if readout_str else 'Searching...'}",
-        (20, frame.shape[0] - 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
-        (0, 255, 0),
-        2,
-    )
-
-    return readout_str, (frame, red_mask)
+    return readout, (vis, mask)
 
 
 def process_frame(frame):
-    """Heavy OpenCV deskewing and HSV segment processing."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    mask1 = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([10, 255, 255]))
-    mask2 = cv2.inRange(hsv, np.array([170, 100, 100]), np.array([180, 255, 255]))
-    red_mask = cv2.add(mask1, mask2)
+    """Headless version – same logic, no drawing."""
+    frame = rotate_frame(frame, angle=5.0)
+    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-20)
+    mask = make_red_mask(dimmed)
+    mask = deskew(mask, shear_angle=9.0)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+    display_roi = find_display_roi(mask)
+    if display_roi is None:
+        return ""
 
-    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    digit_data = []
-
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        if w > 12 and h > 25 and (h / float(w)) > 1.0:
-            rect = cv2.minAreaRect(cnt)
-            box = cv2.boxPoints(rect).astype("float32")
-
-            s = box.sum(axis=1)
-            diff = np.diff(box, axis=1)
-            tl, br = box[np.argmin(s)], box[np.argmax(s)]
-            tr, bl = box[np.argmin(diff)], box[np.argmax(diff)]
-
-            width = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
-            height = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
-
-            if width < 5 or height < 5:
-                continue
-
-            src = np.array([tl, tr, br, bl], dtype="float32")
-            dst = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype="float32")
-
-            M = cv2.getPerspectiveTransform(src, dst)
-            warped = cv2.warpPerspective(red_mask, M, (width, height))
-
-            segments_rel = [
-                (0.20, 0.00, 0.60, 0.20),
-                (0.70, 0.15, 0.30, 0.35),
-                (0.70, 0.50, 0.30, 0.35),
-                (0.20, 0.80, 0.60, 0.20),
-                (0.00, 0.50, 0.30, 0.35),
-                (0.00, 0.15, 0.30, 0.35),
-                (0.20, 0.40, 0.60, 0.20),
-            ]
-
-            states = []
-            for rx, ry, rw, rh in segments_rel:
-                sx, sy = int(rx * width), int(ry * height)
-                sw, sh = max(1, int(rw * width)), max(1, int(rh * height))
-                seg_crop = warped[sy: sy + sh, sx: sx + sw]
-                pixel_density = np.count_nonzero(seg_crop) / float(sw * sh)
-                states.append(1 if pixel_density > 0.25 else 0)
-
-            digit_char = DIGIT_MAP.get(tuple(states), "?")
-            digit_data.append((x, digit_char))
-
-    digit_data = sorted(digit_data, key=lambda d: d[0])
-    readout_str = "".join([d[1] for d in digit_data])
-
-    return readout_str
+    rois, _ = extract_digits_fixed_pitch(
+        mask, display_roi,
+        num_digits=6,
+        char_width_ratio=0.130,
+        gap_ratio=0.030
+    )
+    return "".join(decode_digit(r, density_thresh=0.18) for r in rois)
