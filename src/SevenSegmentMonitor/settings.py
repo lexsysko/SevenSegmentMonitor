@@ -1,4 +1,4 @@
-from os import environ
+from os import environ, mkdir
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -33,5 +33,8 @@ BATCH_FLUSH_DB_TIMEOUT: int = int(environ.get("BATCH_FLUSH_DB_TIMEOUT", 2))
 
 LOAD_FRAME: bool = environ.get("LOAD_FRAME", "f")[0].lower() == "t"
 SAVE_FRAME: bool = environ.get("SAVE_FRAME", "f")[0].lower() == "t"
-FRAME_NAME_PATH: Path = DATA_PATH / Path(environ.get("FRAME_NAME_PATH", "frame.png")).name
+FRAME_FOLDERS: Path = DATA_PATH / "img"
+FRAME_FOLDERS.mkdir(exist_ok=True, parents=True)
+FRAME_NAME_PATH: Path = FRAME_FOLDERS / Path(environ.get("FRAME_FILE_NAME", "frame*.png")).name
+
 FRAME_FPS_DELAY: float = float(environ.get("FRAME_FPS_DELAY", 1))

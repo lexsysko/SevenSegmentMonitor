@@ -33,17 +33,13 @@ SEGMENTS_REL = [
 def rotate_frame(frame, angle=5.0):
     (h, w) = frame.shape[:2]
     M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
-    return cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LINEAR,
-                          borderMode=cv2.BORDER_REPLICATE)
+    return cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
 
 def deskew(mask, shear_angle=9.0):
     """Constant horizontal shear to un-italicise the digits."""
     h, w = mask.shape[:2]
-    M = np.float32([
-        [1, np.tan(np.radians(-shear_angle)), 0],
-        [0, 1, 0]
-    ])
+    M = np.float32([[1, np.tan(np.radians(-shear_angle)), 0], [0, 1, 0]])
     M[0, 2] = -M[0, 1] * h / 2
     return cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_LINEAR)
 
@@ -102,26 +98,28 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.18) -> str:
     return DIGIT_MAP.get(tuple(states), "?")
 
 
-def find_display_roi(mask: np.ndarray, min_area=800):
+def find_display_roi(mask: np.ndarray, min_area=50):
     """Tight bounding box of the largest red blob (whole display)."""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
     cnt = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(cnt) < min_area:
+    area = cv2.contourArea(cnt)
+    logger.debug(f"{area=}")
+    if area < min_area:
         return None
     x, y, w, h = cv2.boundingRect(cnt)
-    pad = 4
+    logger.debug(f"max area: {x}:{y}, {w}x{h} ")
+    pad = 6
     x = max(0, x - pad)
     y = max(0, y - pad)
     w = min(mask.shape[1] - x, w + 2 * pad)
     h = min(mask.shape[0] - y, h + 2 * pad)
+    logger.debug(f"max padded area ({pad}): {x}:{y}, {w}x{h} ")
     return x, y, w, h
 
 
-def extract_digits_fixed_pitch(mask, display_roi, num_digits=6,
-                               char_width_ratio=0.130,
-                               gap_ratio=0.030):
+def extract_digits_fixed_pitch(mask, display_roi, num_digits=6, char_width_ratio=0.130, gap_ratio=0.030):
     """
     Split the display into equal-width character slots.
     Decimal points fall into the gaps or are cut by the 0.88 crop inside decode_digit.
@@ -136,7 +134,7 @@ def extract_digits_fixed_pitch(mask, display_roi, num_digits=6,
     boxes = []  # for drawing
     for i in range(num_digits):
         dx = start_x + i * (char_w + gap)
-        roi = mask[y:y + h, dx:dx + char_w]
+        roi = mask[y : y + h, dx : dx + char_w]
         rois.append(roi)
         boxes.append((dx, y, char_w, h))
     return rois, boxes
@@ -144,24 +142,22 @@ def extract_digits_fixed_pitch(mask, display_roi, num_digits=6,
 
 # ====================== public API ======================
 
+
 def process_and_annotate(frame):
-    """Full pipeline with visualisation (GUI path)."""
-    frame = rotate_frame(frame, angle=5.0)
-    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-20)
+    """Full pipeline with visualization (GUI path)."""
+    frame = rotate_frame(frame, angle=8.0)
+    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-10)
     mask = make_red_mask(dimmed)
-    mask = deskew(mask, shear_angle=9.0)
+    mask = deskew(mask, shear_angle=-5.0)
 
     display_roi = find_display_roi(mask)
     readout = ""
     digit_boxes = []
 
     if display_roi is not None:
-        NUM_DIGITS = 6
+        NUM_DIGITS = 3
         rois, boxes = extract_digits_fixed_pitch(
-            mask, display_roi,
-            num_digits=NUM_DIGITS,
-            char_width_ratio=0.130,
-            gap_ratio=0.030
+            mask, display_roi, num_digits=NUM_DIGITS, char_width_ratio=0.9, gap_ratio=0.250
         )
 
         chars = []
@@ -179,15 +175,14 @@ def process_and_annotate(frame):
         x, y, w, h = display_roi
         cv2.rectangle(vis, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
-    for (x, y, w, h, ch) in digit_boxes:
+    for x, y, w, h, ch in digit_boxes:
         color = (0, 255, 0) if ch != "?" else (0, 0, 255)
         cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
-        cv2.putText(vis, ch, (x, y - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(vis, ch, (x, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    cv2.putText(vis, f"Readout: {readout or '…'}",
-                (20, vis.shape[0] - 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    cv2.putText(
+        vis, f"Readout: {readout or '…'}", (20, vis.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2
+    )
 
     return readout, (vis, mask)
 
@@ -203,10 +198,5 @@ def process_frame(frame):
     if display_roi is None:
         return ""
 
-    rois, _ = extract_digits_fixed_pitch(
-        mask, display_roi,
-        num_digits=6,
-        char_width_ratio=0.130,
-        gap_ratio=0.030
-    )
+    rois, _ = extract_digits_fixed_pitch(mask, display_roi, num_digits=6, char_width_ratio=0.130, gap_ratio=0.030)
     return "".join(decode_digit(r, density_thresh=0.18) for r in rois)
