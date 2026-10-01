@@ -50,3 +50,6 @@ NORMALIZE_DIGITS_HEIGHT: bool = environ.get("NORMALIZE_DIGITS_HEIGHT", "f")[0].l
 NORMALIZED_DIGITS_HEIGHT: int = int(environ.get("NORMALIZED_DIGITS_HEIGHT", 64))
 
 THRESHOLD_ON_STATE: int = int(environ.get("THRESHOLD_ON_STATE", 3))
+
+NUM_DIGITS_ROWS: int = int(environ.get("NUM_DIGITS_ROWS", 2))
+NUM_DIGITS_PER_ROW: int = int(environ.get("NUM_DIGITS_PER_ROW", 3))

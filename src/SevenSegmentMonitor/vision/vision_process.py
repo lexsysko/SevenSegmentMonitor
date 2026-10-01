@@ -2,13 +2,14 @@ import logging
 
 import cv2
 import numpy as np
-from SevenSegmentMonitor.settings import DIGIT_DENSITY_THRESH
+from SevenSegmentMonitor.settings import DIGIT_DENSITY_THRESH, NUM_DIGITS_PER_ROW, NUM_DIGITS_ROWS
 from SevenSegmentMonitor.vision.vision_libs import (
     find_digit_candidates,
     extract_both_rows,
     decode_digit,
     preprocess_img,
     make_red_mask,
+    extract_all_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,8 @@ def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
     mask = make_red_mask(frame)
 
     candidates = find_digit_candidates(mask)
-    rois, boxes = extract_both_rows(mask, candidates, num_digits=3)
+    # rois, boxes = extract_both_rows(mask, candidates, num_digits=NUM_DIGITS_PER_ROW)
+    rois, boxes = extract_all_rows(mask, candidates, num_digits=NUM_DIGITS_PER_ROW, num_rows=NUM_DIGITS_ROWS)
 
     chars = []
     digit_boxes = []
@@ -33,8 +35,8 @@ def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
         digit_boxes.append((x, y, w, h, ch))
 
     # Format as two groups
-    if len(chars) == 6:
-        readout = f"{''.join(chars[:3])} {''.join(chars[3:])}"
+    if len(chars) == NUM_DIGITS_ROWS * NUM_DIGITS_PER_ROW:
+        readout = f"{''.join(chars[:NUM_DIGITS_PER_ROW])} {''.join(chars[NUM_DIGITS_PER_ROW:])}"
     else:
         readout = "".join(chars)
 

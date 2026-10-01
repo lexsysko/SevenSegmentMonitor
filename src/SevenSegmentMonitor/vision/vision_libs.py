@@ -8,6 +8,7 @@ from SevenSegmentMonitor.settings import (
     NORMALIZE_DIGITS_HEIGHT,
     NORMALIZED_DIGITS_HEIGHT,
     DIGIT_SHEAR_ANGLE,
+    NUM_DIGITS_PER_ROW,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,44 @@ def extract_both_rows(mask, candidates, num_digits=3, row_y_tolerance=30):
     bottom_rois, bottom_boxes = extract_row_from_candidates(mask, bottom_cands, num_digits)
 
     return top_rois + bottom_rois, top_boxes + bottom_boxes
+
+
+def split_rows(candidates, num_rows: int | None = None, gap_factor: float = 0.6):
+    """
+    Group (x, y, w, h) candidates into rows, ordered top to bottom.
+    num_rows: if known, split at the (num_rows - 1) largest gaps.
+              If None, split wherever the gap exceeds gap_factor * median digit height.
+    """
+    if not candidates:
+        return []
+
+    cands = sorted(candidates, key=lambda c: c[1] + c[3] / 2)  # by Y center
+    cys = np.array([c[1] + c[3] / 2 for c in cands])
+    gaps = np.diff(cys)
+
+    if num_rows is not None and num_rows > 1:
+        k = min(num_rows - 1, len(gaps))
+        cut_idx = np.sort(np.argsort(gaps)[-k:]) if k > 0 else []
+    else:
+        med_h = np.median([c[3] for c in cands])
+        cut_idx = np.where(gaps > gap_factor * med_h)[0]
+
+    rows, start = [], 0
+    for i in cut_idx:
+        rows.append(cands[start : i + 1])
+        start = i + 1
+    rows.append(cands[start:])
+    return rows
+
+
+def extract_all_rows(mask: np.ndarray, candidates, num_digits=3, num_rows=None, gap_factor=0.6):
+    """Returns (rois, boxes) for every row, top to bottom, each row left to right."""
+    all_rois, all_boxes = [], []
+    for row in split_rows(candidates, num_rows, gap_factor):
+        rois, boxes = extract_row_from_candidates(mask, row, num_digits)
+        all_rois += rois
+        all_boxes += boxes
+    return all_rois, all_boxes
 
 
 def preprocess_img(
