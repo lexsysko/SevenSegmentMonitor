@@ -38,3 +38,15 @@ FRAME_FOLDERS.mkdir(exist_ok=True, parents=True)
 FRAME_NAME_PATH: Path = FRAME_FOLDERS / Path(environ.get("FRAME_FILE_NAME", "frame*.png")).name
 
 FRAME_FPS_DELAY: float = float(environ.get("FRAME_FPS_DELAY", 1))
+
+# if ROTATE_FRAME_ANGLE is None then use Autorotate
+ROTATE_FRAME_ANGLE: float | None = float(_a) if (_a := environ.get("ROTATE_FRAME_ANGLE")) else None
+DIMMED_BRIGHTNESS: float = float(environ.get("DIMMED_BRIGHTNESS", -10))
+
+DIGIT_DENSITY_THRESH: float = float(environ.get("DIGIT_DENSITY_THRESH", 0.15))
+DIGIT_SHEAR_ANGLE: float = float(environ.get("DIGIT_SHEAR_ANGLE", -7))
+
+NORMALIZE_DIGITS_HEIGHT: bool = environ.get("NORMALIZE_DIGITS_HEIGHT", "f")[0].lower() == "t"
+NORMALIZED_DIGITS_HEIGHT: int = int(environ.get("NORMALIZED_DIGITS_HEIGHT", 64))
+
+THRESHOLD_ON_STATE: int = int(environ.get("THRESHOLD_ON_STATE", 3))

@@ -2,6 +2,14 @@ import cv2
 import numpy as np
 import logging
 
+from SevenSegmentMonitor.settings import (
+    ROTATE_FRAME_ANGLE,
+    DIMMED_BRIGHTNESS,
+    NORMALIZE_DIGITS_HEIGHT,
+    NORMALIZED_DIGITS_HEIGHT,
+    DIGIT_SHEAR_ANGLE,
+)
+
 logger = logging.getLogger(__name__)
 
 DIGIT_MAP = {
@@ -30,18 +38,58 @@ SEGMENTS_REL = [
 ]
 
 
-def rotate_frame(frame, angle=5.0):
+def make_mask(frame: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return mask
+
+
+def tilt_from_contour(mask: np.ndarray) -> float:
+    cnts, _ = cv2.findContours(make_mask(mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return 0.0
+    c = max(cnts, key=cv2.contourArea)
+    (_, _), (w, h), ang = cv2.minAreaRect(c)
+    # works for both old (-90..0] and new (0..90] OpenCV conventions
+    return ((ang + 45) % 90) - 45
+
+
+def rotate_frame(frame, angle: float | None = None) -> np.ndarray:
+    """
+    If angle is None used autorotate
+    """
+    if angle is None:
+        angle = tilt_from_contour(frame)
+        logger.debug(f"Auto rotated by {angle:.2f}deg")
+    elif angle == 0:
+        return frame
     (h, w) = frame.shape[:2]
     M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
     return cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
 
-def deskew(mask, shear_angle=9.0):
+def deskew_centroid(mask: np.ndarray, shear_angle: float = 9.0) -> np.ndarray:
     """Constant horizontal shear to un-italicise the digits."""
+    if not shear_angle:
+        return mask
     h, w = mask.shape[:2]
     M = np.float32([[1, np.tan(np.radians(-shear_angle)), 0], [0, 1, 0]])
     M[0, 2] = -M[0, 1] * h / 2
     return cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_LINEAR)
+
+
+def deskew_anchor(mask: np.ndarray, shear_angle: float = 9.0, anchor: str = "bottom") -> np.ndarray:
+    """Horizontal shear without translating the anchor row.
+    anchor: 'top' | 'center' | 'bottom' -- the row that stays in place."""
+    if not shear_angle:
+        return mask
+    h, w = mask.shape[:2]
+    t = np.tan(np.radians(-shear_angle))
+    y0 = {"top": 0, "center": h / 2, "bottom": h - 1}[anchor]
+    # x' = x + t*(y - y0)  -> the row y0 does not move
+    M = np.float32([[1, t, -t * y0], [0, 1, 0]])
+    return cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
 
 def make_red_mask(frame: np.ndarray) -> np.ndarray:
@@ -71,7 +119,15 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_
     if h < 10 or w < 6:
         return "?"
 
-    roi = deskew(roi, shear_angle=-7)
+    if NORMALIZE_DIGITS_HEIGHT:
+        # 1. normalize to a fixed height, keep the aspect ratio
+        scale = NORMALIZED_DIGITS_HEIGHT / h
+        roi = cv2.resize(roi, (max(1, round(w * scale)), NORMALIZED_DIGITS_HEIGHT), interpolation=cv2.INTER_LINEAR)
+        _, roi = cv2.threshold(roi, 127, 255, cv2.THRESH_BINARY)  # back to a clean mask
+        h, w = roi.shape[:2]
+
+    if DIGIT_SHEAR_ANGLE:
+        roi = deskew_centroid(roi, shear_angle=DIGIT_SHEAR_ANGLE)
 
     # ignore decimal point area on the right
     usable_w = int(w * 0.90)
@@ -85,9 +141,12 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_
     if is_probably_one(roi):
         return "1"
 
+    debug: np.ndarray | None = None
+
     if im_debug:
         debug = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
     states = []
+
     for i, (rx, ry, rw, rh) in enumerate(SEGMENTS_REL):
         x1 = int(rx * w)
         y1 = int(ry * h)
@@ -98,16 +157,18 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_
         on = dens > density_thresh
         states.append(1 if on else 0)
         color = (0, 255, 0) if on else (0, 0, 255)
-        if im_debug:
+        if debug is not None:
             cv2.rectangle(debug, (x1, y1), (x2, y2), color, 1)
 
-    if im_debug:
+    if debug is not None:
         cv2.imshow(f"segments_{id}", debug)
 
     return DIGIT_MAP.get(tuple(states), "?")
 
 
-def merge_vertical_fragments(candidates, x_tol=10, y_gap_max=15):
+def merge_vertical_fragments(
+    candidates, x_tol: int = 10, y_gap_max: int = 15
+) -> list[tuple[float, float, float, float]]:
     if not candidates:
         return []
     cands = sorted(candidates, key=lambda c: (c[0], c[1]))
@@ -135,7 +196,7 @@ def merge_vertical_fragments(candidates, x_tol=10, y_gap_max=15):
     return merged
 
 
-def find_digit_candidates(mask, min_area=30, max_area=800):
+def find_digit_candidates(mask: np.ndarray, min_area: int = 30, max_area: int = 800):
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 7))
     solid = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
@@ -198,12 +259,13 @@ def extract_both_rows(mask, candidates, num_digits=3, row_y_tolerance=30):
     ys = [c[1] for c in candidates]
     mid_y = (min(ys) + max(ys)) / 2
 
+    #
     top_cands = [c for c in candidates if c[1] < mid_y + row_y_tolerance // 2]
     bottom_cands = [c for c in candidates if c[1] >= mid_y - row_y_tolerance // 2]
 
     # Avoid double-counting if tolerance is large
-    top_cands = [c for c in candidates if c[1] < mid_y]
-    bottom_cands = [c for c in candidates if c[1] >= mid_y]
+    # top_cands = [c for c in candidates if c[1] < mid_y]
+    # bottom_cands = [c for c in candidates if c[1] >= mid_y]
 
     top_rois, top_boxes = extract_row_from_candidates(mask, top_cands, num_digits)
     bottom_rois, bottom_boxes = extract_row_from_candidates(mask, bottom_cands, num_digits)
@@ -211,63 +273,13 @@ def extract_both_rows(mask, candidates, num_digits=3, row_y_tolerance=30):
     return top_rois + bottom_rois, top_boxes + bottom_boxes
 
 
-# ====================== public API ======================
-
-
-def process_and_annotate(frame: np.ndarray):
-    """Full pipeline with visualization (GUI path)."""
-    frame = rotate_frame(frame, angle=8.0)
-    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-10)
-    mask = make_red_mask(dimmed)
-
-    candidates = find_digit_candidates(mask)
-    rois, boxes = extract_both_rows(mask, candidates, num_digits=3)
-
-    chars = []
-    digit_boxes = []
-    for i, roi in enumerate(rois):
-        ch = decode_digit(roi, density_thresh=0.13, id=i, im_debug=True)
-        chars.append(ch)
-        x, y, w, h = boxes[i]
-        digit_boxes.append((x, y, w, h, ch))
-
-    # Format as two groups
-    if len(chars) == 6:
-        readout = f"{''.join(chars[:3])} {''.join(chars[3:])}"
-    else:
-        readout = "".join(chars)
-
-    # ----- draw -----
-    vis = frame.copy()
-
-    for x, y, w, h, ch in digit_boxes:
-        color = (0, 255, 0) if ch != "?" else (0, 0, 255)
-        cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
-        cv2.putText(vis, ch, (x, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
-    # Optional: show candidates in yellow
-    for c in candidates:
-        x, y, w, h = c
-        cv2.rectangle(vis, (x, y), (x + w, y + h), (255, 255, 0, 0.1), 1)
-
-    cv2.putText(
-        vis, f"Readout: {readout or '…'}", (20, vis.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2
-    )
-
-    return readout, (vis, mask)
-
-
-def process_frame(frame):
-    """Headless version – same logic, no drawing."""
-    frame = rotate_frame(frame, angle=8.0)
-    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-10)
-    mask = make_red_mask(dimmed)
-
-    candidates = find_digit_candidates(mask)
-    rois, _ = extract_both_rows(mask, candidates, num_digits=3)
-
-    chars = [decode_digit(r, density_thresh=0.13) for r in rois]
-
-    if len(chars) == 6:
-        return f"{''.join(chars[:3])} {''.join(chars[3:])}"
-    return "".join(chars)
+def preprocess_img(
+    frame: np.ndarray,
+    rotate_frame_angle: float | None = ROTATE_FRAME_ANGLE,
+    dimmed_brightness: float = DIMMED_BRIGHTNESS,
+) -> np.ndarray:
+    if rotate_frame_angle != 0:
+        frame = rotate_frame(frame, angle=rotate_frame_angle)
+    if dimmed_brightness:
+        frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=dimmed_brightness)
+    return frame

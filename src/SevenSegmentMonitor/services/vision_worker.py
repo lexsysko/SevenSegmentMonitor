@@ -5,7 +5,8 @@ from queue import Queue
 from threading import Event
 
 import cv2
-from SevenSegmentMonitor.services.vision import process_and_annotate, process_frame
+from SevenSegmentMonitor.settings import THRESHOLD_ON_STATE
+from SevenSegmentMonitor.vision.vision_process import process_and_annotate, process_frame
 from SevenSegmentMonitor.tools import is_headless
 
 logger = logging.getLogger(__name__)
@@ -36,12 +37,19 @@ def vision_worker_thread(frame_queue: Queue, db_queue: Queue, stop_event: Event)
         else:
             readout = process_frame(frame)
 
-        # logger.debug(f"{readout=}")
+        logger.debug(f"{readout=}")
 
         if readout and "?" not in readout and readout != last_detected:
-            last_detected = readout
-            timestamp = time.time()
-            db_queue.put((timestamp, 1, readout))
+            values = readout.split(maxsplit=2)
+            if len(values) > 1:
+                try:
+                    value_a = int(values[1])
+                    last_detected = readout
+                    timestamp = time.time()
+                    state = value_a >= THRESHOLD_ON_STATE
+                    db_queue.put((timestamp, state, readout))
+                except ValueError:
+                    ...
 
     if not is_headless():
         cv2.destroyAllWindows()

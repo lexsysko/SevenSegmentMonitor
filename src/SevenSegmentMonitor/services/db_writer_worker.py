@@ -51,8 +51,9 @@ def init_db(db_path: Path | None = None) -> None:
 
 
 def db_writer_worker_thread(
-        db_queue: queue.Queue, shutdown_event: Event,
-        db_path: Path | None = None,
+    db_queue: queue.Queue,
+    shutdown_event: Event,
+    db_path: Path | None = None,
 ) -> None:
     init_db(db_path)
     logger.info(f"[DB] Worker is ready")
@@ -61,9 +62,11 @@ def db_writer_worker_thread(
         while not (shutdown_event.is_set() and db_queue.empty()):
             try:
                 timestamp, state, raw_data = db_queue.get(timeout=1.0)
-                db.execute("INSERT INTO events (timestamp, state, raw_data) VALUES (?, ?, ?)", (timestamp, state, raw_data))
+                db.execute(
+                    "INSERT INTO events (timestamp, state, raw_data) VALUES (?, ?, ?)", (timestamp, state, raw_data)
+                )
                 db.commit()
-                logger.debug(f"[{timestamp}] SQL LOGGED: {state=} {raw_data=}")
+                logger.info(f"[DB] LOGGED: [{int(timestamp)}] {state=}, {raw_data=}")
                 db_queue.task_done()
             except queue.Empty:
                 continue

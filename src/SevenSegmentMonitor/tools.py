@@ -11,8 +11,8 @@ def is_headless() -> bool:
     global _is_headless
     if _is_headless is None:
         if logger.getEffectiveLevel() != logging.DEBUG:
-            _is_headless = False
-            return False
+            _is_headless = True
+            return _is_headless
         build_info = cv2.getBuildInformation()
         # Headless builds explicitly state 'GUI: NONE' under the GUI section
         _is_headless = "GUI:               NONE" in build_info or "GUI:" not in build_info
