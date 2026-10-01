@@ -1,7 +1,8 @@
 import logging
 
 import cv2
-from SevenSegmentMonitor.services.vision import logger
+
+logger = logging.getLogger(__name__)
 
 _is_headless = None
 

@@ -20,13 +20,13 @@ DIGIT_MAP = {
 # Relative segment windows (x, y, w, h) in 0..1
 # Order: a(top), b(top-right), c(bottom-right), d(bottom), e(bottom-left), f(top-left), g(middle)
 SEGMENTS_REL = [
-    (0.22, 0.02, 0.56, 0.15),  # a
-    (0.68, 0.12, 0.28, 0.32),  # b
-    (0.68, 0.52, 0.28, 0.32),  # c
-    (0.22, 0.83, 0.56, 0.15),  # d
-    (0.04, 0.52, 0.28, 0.32),  # e
-    (0.04, 0.12, 0.28, 0.32),  # f
-    (0.22, 0.42, 0.56, 0.15),  # g
+    (0.18, 0.02, 0.64, 0.15),  # a
+    (0.62, 0.12, 0.34, 0.31),  # b
+    (0.62, 0.53, 0.34, 0.31),  # c
+    (0.18, 0.83, 0.64, 0.14),  # d
+    (0.04, 0.53, 0.34, 0.31),  # e
+    (0.04, 0.12, 0.34, 0.31),  # f
+    (0.20, 0.42, 0.50, 0.15),  # g
 ]
 
 
@@ -55,29 +55,29 @@ def make_red_mask(frame: np.ndarray) -> np.ndarray:
 
 
 def is_probably_one(roi: np.ndarray) -> bool:
-    """Thin digit with almost all mass on the right side → '1'."""
     h, w = roi.shape[:2]
-    if h < 10 or w < 4:
+    if h < 12 or w < 5:
         return False
-    if h / max(w, 1) > 2.3:
-        return True
+    if h / max(w, 1) < 2.6:
+        return False
     mid = w // 2
     left_d = cv2.countNonZero(roi[:, :mid]) / max(mid * h, 1)
     right_d = cv2.countNonZero(roi[:, mid:]) / max((w - mid) * h, 1)
-    return right_d > 0.22 and left_d < 0.07
+    return right_d > 0.28 and left_d < 0.06
 
 
-def decode_digit(roi: np.ndarray, density_thresh: float = 0.18) -> str:
+def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_debug: bool = False) -> str:
     h, w = roi.shape[:2]
     if h < 10 or w < 6:
         return "?"
 
-    # ----- ignore decimal point area (right ~12 % of the slot) -----
-    usable_w = int(w * 0.88)
+    roi = deskew(roi, shear_angle=-7)
+
+    # ignore decimal point area on the right
+    usable_w = int(w * 0.90)
     roi = roi[:, :usable_w]
     h, w = roi.shape[:2]
 
-    # Optional upscale for very small digits
     if h < 22:
         roi = cv2.resize(roi, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
         h, w = roi.shape[:2]
@@ -85,100 +85,170 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.18) -> str:
     if is_probably_one(roi):
         return "1"
 
+    if im_debug:
+        debug = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
     states = []
-    for rx, ry, rw, rh in SEGMENTS_REL:
+    for i, (rx, ry, rw, rh) in enumerate(SEGMENTS_REL):
         x1 = int(rx * w)
         y1 = int(ry * h)
         x2 = min(w, x1 + max(1, int(rw * w)))
         y2 = min(h, y1 + max(1, int(rh * h)))
         seg = roi[y1:y2, x1:x2]
         dens = cv2.countNonZero(seg) / float(seg.size) if seg.size else 0.0
-        states.append(1 if dens > density_thresh else 0)
+        on = dens > density_thresh
+        states.append(1 if on else 0)
+        color = (0, 255, 0) if on else (0, 0, 255)
+        if im_debug:
+            cv2.rectangle(debug, (x1, y1), (x2, y2), color, 1)
+
+    if im_debug:
+        cv2.imshow(f"segments_{id}", debug)
 
     return DIGIT_MAP.get(tuple(states), "?")
 
 
-def find_display_roi(mask: np.ndarray, min_area=50):
-    """Tight bounding box of the largest red blob (whole display)."""
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-    cnt = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(cnt)
-    logger.debug(f"{area=}")
-    if area < min_area:
-        return None
-    x, y, w, h = cv2.boundingRect(cnt)
-    logger.debug(f"max area: {x}:{y}, {w}x{h} ")
-    pad = 6
-    x = max(0, x - pad)
-    y = max(0, y - pad)
-    w = min(mask.shape[1] - x, w + 2 * pad)
-    h = min(mask.shape[0] - y, h + 2 * pad)
-    logger.debug(f"max padded area ({pad}): {x}:{y}, {w}x{h} ")
-    return x, y, w, h
+def merge_vertical_fragments(candidates, x_tol=10, y_gap_max=15):
+    if not candidates:
+        return []
+    cands = sorted(candidates, key=lambda c: (c[0], c[1]))
+    merged = []
+    used = [False] * len(cands)
+
+    for i, (x1, y1, w1, h1) in enumerate(cands):
+        if used[i]:
+            continue
+        for j in range(i + 1, len(cands)):
+            if used[j]:
+                continue
+            x2, y2, w2, h2 = cands[j]
+            if abs(x1 - x2) < x_tol and 0 < (y2 - (y1 + h1)) < y_gap_max:
+                nx = min(x1, x2)
+                ny = min(y1, y2)
+                nw = max(x1 + w1, x2 + w2) - nx
+                nh = max(y1 + h1, y2 + h2) - ny
+                merged.append((nx, ny, nw, nh))
+                used[i] = used[j] = True
+                break
+        else:
+            merged.append((x1, y1, w1, h1))
+            used[i] = True
+    return merged
 
 
-def extract_digits_fixed_pitch(mask, display_roi, num_digits=6, char_width_ratio=0.130, gap_ratio=0.030):
-    """
-    Split the display into equal-width character slots.
-    Decimal points fall into the gaps or are cut by the 0.88 crop inside decode_digit.
-    """
-    x, y, w, h = display_roi
-    char_w = int(w * char_width_ratio)
-    gap = int(w * gap_ratio)
-    total_w = num_digits * char_w + (num_digits - 1) * gap
-    start_x = x + max(0, (w - total_w) // 2)
+def find_digit_candidates(mask, min_area=30, max_area=800):
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 7))
+    solid = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    rois = []
-    boxes = []  # for drawing
+    contours, _ = cv2.findContours(solid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    raw = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area or area > max_area:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        aspect = h / max(w, 1)
+        if 1.0 < aspect < 4.5:
+            raw.append((x, y, w, h))
+
+    return merge_vertical_fragments(raw, x_tol=10, y_gap_max=15)
+
+
+def extract_row_from_candidates(mask, row_candidates, num_digits=3):
+    """Extract one row using leftmost / rightmost + average width."""
+    if len(row_candidates) < 2:
+        return [], []
+
+    row = sorted(row_candidates, key=lambda c: c[0])
+    widths = [c[2] for c in row]
+    avg_w = int(np.median(widths))
+
+    x_start = row[0][0]
+    x_end = row[-1][0] + row[-1][2]
+    total_w = x_end - x_start
+    y = min(c[1] for c in row)
+    h = max(c[1] + c[3] for c in row) - y
+
+    char_w = avg_w
+    remaining = total_w - num_digits * char_w
+    gap = max(0, remaining // (num_digits - 1)) if num_digits > 1 else 0
+
+    if gap < 0 or gap > char_w * 0.6:
+        char_w = total_w // num_digits
+        gap = max(0, gap // 4)
+
+    rois, boxes = [], []
     for i in range(num_digits):
-        dx = start_x + i * (char_w + gap)
+        dx = max(0, x_start + i * (char_w + gap))
         roi = mask[y : y + h, dx : dx + char_w]
         rois.append(roi)
         boxes.append((dx, y, char_w, h))
     return rois, boxes
 
 
+def extract_both_rows(mask, candidates, num_digits=3, row_y_tolerance=30):
+    """
+    Split candidates into top and bottom rows and extract both.
+    Returns (rois, boxes) for all 6 digits (top then bottom).
+    """
+    if not candidates:
+        return [], []
+
+    # Sort by Y and split into two groups
+    candidates = sorted(candidates, key=lambda c: c[1])
+    ys = [c[1] for c in candidates]
+    mid_y = (min(ys) + max(ys)) / 2
+
+    top_cands = [c for c in candidates if c[1] < mid_y + row_y_tolerance // 2]
+    bottom_cands = [c for c in candidates if c[1] >= mid_y - row_y_tolerance // 2]
+
+    # Avoid double-counting if tolerance is large
+    top_cands = [c for c in candidates if c[1] < mid_y]
+    bottom_cands = [c for c in candidates if c[1] >= mid_y]
+
+    top_rois, top_boxes = extract_row_from_candidates(mask, top_cands, num_digits)
+    bottom_rois, bottom_boxes = extract_row_from_candidates(mask, bottom_cands, num_digits)
+
+    return top_rois + bottom_rois, top_boxes + bottom_boxes
+
+
 # ====================== public API ======================
 
 
-def process_and_annotate(frame):
+def process_and_annotate(frame: np.ndarray):
     """Full pipeline with visualization (GUI path)."""
     frame = rotate_frame(frame, angle=8.0)
     dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-10)
     mask = make_red_mask(dimmed)
-    mask = deskew(mask, shear_angle=-5.0)
 
-    display_roi = find_display_roi(mask)
-    readout = ""
+    candidates = find_digit_candidates(mask)
+    rois, boxes = extract_both_rows(mask, candidates, num_digits=3)
+
+    chars = []
     digit_boxes = []
+    for i, roi in enumerate(rois):
+        ch = decode_digit(roi, density_thresh=0.13, id=i, im_debug=True)
+        chars.append(ch)
+        x, y, w, h = boxes[i]
+        digit_boxes.append((x, y, w, h, ch))
 
-    if display_roi is not None:
-        NUM_DIGITS = 3
-        rois, boxes = extract_digits_fixed_pitch(
-            mask, display_roi, num_digits=NUM_DIGITS, char_width_ratio=0.9, gap_ratio=0.250
-        )
-
-        chars = []
-        for i, roi in enumerate(rois):
-            ch = decode_digit(roi, density_thresh=0.18)
-            chars.append(ch)
-            x, y, w, h = boxes[i]
-            digit_boxes.append((x, y, w, h, ch))
-
+    # Format as two groups
+    if len(chars) == 6:
+        readout = f"{''.join(chars[:3])} {''.join(chars[3:])}"
+    else:
         readout = "".join(chars)
 
     # ----- draw -----
     vis = frame.copy()
-    if display_roi is not None:
-        x, y, w, h = display_roi
-        cv2.rectangle(vis, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
     for x, y, w, h, ch in digit_boxes:
         color = (0, 255, 0) if ch != "?" else (0, 0, 255)
         cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
         cv2.putText(vis, ch, (x, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+    # Optional: show candidates in yellow
+    for c in candidates:
+        x, y, w, h = c
+        cv2.rectangle(vis, (x, y), (x + w, y + h), (255, 255, 0, 0.1), 1)
 
     cv2.putText(
         vis, f"Readout: {readout or '…'}", (20, vis.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2
@@ -189,14 +259,15 @@ def process_and_annotate(frame):
 
 def process_frame(frame):
     """Headless version – same logic, no drawing."""
-    frame = rotate_frame(frame, angle=5.0)
-    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-20)
+    frame = rotate_frame(frame, angle=8.0)
+    dimmed = cv2.convertScaleAbs(frame, alpha=1.0, beta=-10)
     mask = make_red_mask(dimmed)
-    mask = deskew(mask, shear_angle=9.0)
 
-    display_roi = find_display_roi(mask)
-    if display_roi is None:
-        return ""
+    candidates = find_digit_candidates(mask)
+    rois, _ = extract_both_rows(mask, candidates, num_digits=3)
 
-    rois, _ = extract_digits_fixed_pitch(mask, display_roi, num_digits=6, char_width_ratio=0.130, gap_ratio=0.030)
-    return "".join(decode_digit(r, density_thresh=0.18) for r in rois)
+    chars = [decode_digit(r, density_thresh=0.13) for r in rois]
+
+    if len(chars) == 6:
+        return f"{''.join(chars[:3])} {''.join(chars[3:])}"
+    return "".join(chars)
