@@ -55,7 +55,6 @@ def db_writer_worker_thread(
     shutdown_event: Event,
     db_path: Path | None = None,
 ) -> None:
-    init_db(db_path)
     logger.info(f"[DB] Worker is ready")
 
     with get_db_connection(db_path) as db:
@@ -82,13 +81,16 @@ def db_cleanup(cutoff_timestamp: float, db_path: Path | None = None) -> int:
         return cursor.rowcount
 
 
-def db_cleanup_worker_thread(shutdown_event: Event, db_path: Path | None = None, cleanup_timeout=None):
+def db_cleanup_worker_thread(
+    shutdown_event: Event, db_path: Path | None = None, cleanup_timeout=None, start_delay: int = 10
+):
     cleanup_timeout = cleanup_timeout or CLEANUP_TIMEOUT
     cleanup_period = datetime.timedelta(days=CLEANUP_PERIOD_DAYS).total_seconds()
 
     if not cleanup_period:
         logger.info("[DB] DB WORKER FOR CLEANUP IS DISABLED")
         return
+    sleep(start_delay)
     logger.info(f"[DB] CLEANUP initialized every {cleanup_timeout} seconds.")
 
     while not shutdown_event.is_set():
