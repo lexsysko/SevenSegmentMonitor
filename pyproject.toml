@@ -29,7 +29,7 @@ build-backend = "hatchling.build"
 packages = ["src/SevenSegmentMonitor"]
 
 [project.scripts]
-thermometermonitor = "SevenSegmentMonitor.main:main"
+sevensegmentmonitor = "SevenSegmentMonitor.main:main"
 
 [tool.hatch.build.sdist]
 relative-install = true

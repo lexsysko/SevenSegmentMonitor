@@ -24,7 +24,7 @@ into an SQLite database with automated retention/cleanup.
     - Shear angle compensation for slanted italicized digits (`DIGIT_SHEAR_ANGLE`).
     - Digit density and segment activation threshold tuning.
 - **Deployment Ready:**
-    - Run directly via Python CLI (`thermometermonitor`).
+    - Run directly via Python CLI (`sevensegmentmonitor`).
     - Run containerized via Docker Compose with optional Grafana integration (using `frser-sqlite-datasource`).
 
 ---
@@ -94,7 +94,7 @@ Once installed, you can start the application using the entry point script:
 cp dot.env.example .env
 
 # Run monitor
-uv run thermometermonitor
+uv run sevensegmentmonitor
 # or
 uv run python -m SevenSegmentMonitor.main
 ```
