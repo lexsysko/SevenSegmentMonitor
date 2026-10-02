@@ -6,8 +6,9 @@ import threading
 from pathlib import Path
 
 from SevenSegmentMonitor.handler_signal import setup_signal_handlers
-from SevenSegmentMonitor.services.db_writer_worker import db_writer_worker_thread, db_cleanup_worker_thread
-from SevenSegmentMonitor.services.vision import camera_producer_thread, vision_worker_thread
+from SevenSegmentMonitor.services.db_writer_worker import db_writer_worker_thread, db_cleanup_worker_thread, init_db
+from SevenSegmentMonitor.services.vision_worker import vision_worker_thread
+from SevenSegmentMonitor.services.camera_producer import camera_producer_thread
 from SevenSegmentMonitor.settings import APP_VERSION, LOGLEVEL
 
 
@@ -44,8 +45,8 @@ def main():
     if video_src.isdigit():
         video_src = int(video_src)
 
+    init_db()
     shutdown_event = threading.Event()
-
     setup_signal_handlers(shutdown_event)
 
     # Standard thread-safe queues
@@ -55,8 +56,8 @@ def main():
     # Create workers
     t_cam = threading.Thread(target=camera_producer_thread, args=(video_src, frame_queue, shutdown_event), daemon=True)
     t_vision = threading.Thread(target=vision_worker_thread, args=(frame_queue, db_queue, shutdown_event), daemon=True)
-    t_db_cleanup = threading.Thread(target=db_cleanup_worker_thread, args=(shutdown_event,), daemon=True)
     t_db_writer = threading.Thread(target=db_writer_worker_thread, args=(db_queue, shutdown_event), daemon=False)
+    t_db_cleanup = threading.Thread(target=db_cleanup_worker_thread, args=(shutdown_event,), daemon=True)
 
     t_cam.start()
     t_vision.start()

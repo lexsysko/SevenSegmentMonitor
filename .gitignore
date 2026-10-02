@@ -3,3 +3,4 @@
 /data/
 /dist/
 __pycache__
+/tools/easy_hsv_color_picker/

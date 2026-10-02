@@ -112,7 +112,7 @@ wheels = [
 
 [[package]]
 name = "sevensegmentmonitor"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "opencv-python", marker = "sys_platform == 'darwin' or sys_platform == 'win32'" },
@@ -122,7 +122,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "opencv-python", marker = "sys_platform == 'darwin' or sys_platform == 'win32'", specifier = ">=5.0.0.93" },
-    { name = "opencv-python-headless", marker = "sys_platform == 'linux'", specifier = ">=5.0.0.93" },
+    { name = "opencv-python", marker = "sys_platform == 'darwin' or sys_platform == 'win32'", specifier = ">=5.0.0" },
+    { name = "opencv-python-headless", marker = "sys_platform == 'linux'", specifier = ">=5.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
 ]
