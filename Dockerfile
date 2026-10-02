@@ -64,6 +64,7 @@ FROM python:${PYTHON_VER}-slim AS runner
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libjpeg62-turbo \
+    v4l-utils \
     procps \
     htop \
     && rm -rf /var/lib/apt/lists/*

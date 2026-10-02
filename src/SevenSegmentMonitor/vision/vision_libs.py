@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 import logging
@@ -8,8 +10,14 @@ from SevenSegmentMonitor.settings import (
     NORMALIZE_DIGITS_HEIGHT,
     NORMALIZED_DIGITS_HEIGHT,
     DIGIT_SHEAR_ANGLE,
-    NUM_DIGITS_PER_ROW,
+    DEBUG_FOLDER,
+    RED_HSV_RANGE_1_LOW,
+    RED_HSV_RANGE_1_HIGH,
+    RED_HSV_RANGE_2_LOW,
+    RED_HSV_RANGE_2_HIGH,
+    WITHOUT_GREEN_RANGE,
 )
+from SevenSegmentMonitor.tools import is_headless
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +103,40 @@ def deskew_anchor(mask: np.ndarray, shear_angle: float = 9.0, anchor: str = "bot
 
 def make_red_mask(frame: np.ndarray) -> np.ndarray:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    m1 = cv2.inRange(hsv, (0, 40, 180), (18, 255, 255))
-    m2 = cv2.inRange(hsv, (160, 40, 180), (180, 255, 255))
+    m1 = cv2.inRange(hsv, RED_HSV_RANGE_1_LOW, RED_HSV_RANGE_1_HIGH)
+    m2 = cv2.inRange(hsv, RED_HSV_RANGE_2_LOW, RED_HSV_RANGE_2_HIGH)
     mask = cv2.bitwise_or(m1, m2)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return mask
+
+
+def make_red_mask_adaptive(frame: np.ndarray) -> np.ndarray:
+    # Convert frame to signed integer to prevent negative underflow
+    b, g, r = cv2.split(frame.astype(np.int16))
+
+    # Subtract max(G, B) from R. Red pixels will produce high positive values.
+    # Non-red bright pixels (white lights, green LEDs) will produce <= 0.
+    red_dominance = np.clip(r - np.maximum(g, b), 0, 255).astype(np.uint8)
+
+    # Threshold the dominant red pixels (adjust '30' if needed)
+    _, mask = cv2.threshold(red_dominance, 30, 255, cv2.THRESH_BINARY)
+
+    # Close small gaps in segments
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    return mask
+
+
+def make_without_green_mask(frame: np.ndarray) -> np.ndarray:
+    b, g, r = cv2.split(frame)
+    gray_no_green = ((r.astype(np.uint16) + b.astype(np.uint16)) // 2).astype(np.uint8)
+    _, mask_bright = cv2.threshold(gray_no_green, WITHOUT_GREEN_RANGE[0], WITHOUT_GREEN_RANGE[1], cv2.THRESH_BINARY)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.morphologyEx(mask_bright, cv2.MORPH_CLOSE, kernel, iterations=1)
+
     return mask
 
 
@@ -314,7 +351,7 @@ def extract_all_rows(mask: np.ndarray, candidates, num_digits=3, num_rows=None, 
 def preprocess_img(
     frame: np.ndarray,
     rotate_frame_angle: float | None = ROTATE_FRAME_ANGLE,
-    dimmed_brightness: float = DIMMED_BRIGHTNESS,
+    dimmed_brightness: float | None = DIMMED_BRIGHTNESS,
 ) -> np.ndarray:
     if rotate_frame_angle != 0:
         frame = rotate_frame(frame, angle=rotate_frame_angle)
@@ -418,3 +455,15 @@ def make_debug_grid(
         canvas[y : y + sh, x : x + sw] = frame
 
     return canvas
+
+
+def show_or_save(
+    name: str,
+    frame: np.ndarray,
+    *,
+    output_dir: str | Path = DEBUG_FOLDER,
+) -> None:
+    if is_headless():
+        cv2.imwrite(str(output_dir / f"{name}.png"), frame)
+    else:
+        cv2.imshow(name, frame)

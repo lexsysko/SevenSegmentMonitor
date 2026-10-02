@@ -14,14 +14,15 @@ if [ "${WAITER:-}" = "1" ]; then
  exit
 fi
 
-if [ -n "${LOGLEVEL:-WARNING}" ]; then
-  LOGLEVEL=" --loglevel ${LOGLEVEL}"
-fi
+#if [ -n "${LOGLEVEL:-WARNING}" ]; then
+#  LOGLEVEL=" --loglevel ${LOGLEVEL}"
+#fi
 
-if [ -n "${THRESHOLD:-}" ]; then
-  THRESHOLD=" --threshold ${THRESHOLD}"
+if [ -n "${TUNE_VIDEO_BRIGHTNESS:-}" ]; then
+  echo "Setup webcam video brightness to ${TUNE_VIDEO_BRIGHTNESS}"
+  v4l2-ctl -d /dev/video0 --set-ctrl=brightness=${TUNE_VIDEO_BRIGHTNESS}
 fi
 
 
 echo "\n\nRUNNING  ${LOGLEVEL}${THRESHOLD:-}..."
-exec python /app/src/SevenSegmentMonitor/main.py ${LOGLEVEL}${THRESHOLD:-}
+exec python /app/src/SevenSegmentMonitor/main.py

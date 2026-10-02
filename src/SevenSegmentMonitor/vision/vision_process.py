@@ -5,14 +5,14 @@ import numpy as np
 from SevenSegmentMonitor.settings import DIGIT_DENSITY_THRESH, NUM_DIGITS_PER_ROW, NUM_DIGITS_ROWS, SMALL_COMPONENT_AREA
 from SevenSegmentMonitor.vision.vision_libs import (
     find_digit_candidates,
-    extract_both_rows,
     decode_digit,
     preprocess_img,
     make_red_mask,
     extract_all_rows,
-    canvas_scaled,
     make_debug_grid,
     remove_small_components,
+    show_or_save,
+    make_without_green_mask,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
     """Full pipeline with visualization (GUI path)."""
     frame = preprocess_img(frame)
-    mask = make_red_mask(frame)
+    # mask = make_red_mask(frame)
+    mask = make_without_green_mask(frame)
     if SMALL_COMPONENT_AREA is not None:
         mask = remove_small_components(mask, min_area=SMALL_COMPONENT_AREA)
 
@@ -47,7 +48,7 @@ def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
             debug_digit_frames.append(debug_digit_frame)
 
     if debug_digit_frames:
-        cv2.imshow(
+        show_or_save(
             f"segments", make_debug_grid(debug_digit_frames, scale=2, rows=NUM_DIGITS_ROWS, cols=NUM_DIGITS_PER_ROW)
         )
 
@@ -80,7 +81,8 @@ def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
 def process_frame(frame: np.ndarray) -> str:
     """Headless version – same logic, no drawing."""
     frame = preprocess_img(frame)
-    mask = make_red_mask(frame)
+    # mask = make_red_mask(frame)
+    mask = make_without_green_mask(frame)
 
     candidates = find_digit_candidates(mask)
     rois, _ = extract_all_rows(mask, candidates, num_digits=NUM_DIGITS_PER_ROW, num_rows=NUM_DIGITS_ROWS)

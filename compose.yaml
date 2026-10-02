@@ -11,8 +11,9 @@ services:
       - path: .env
         required: false
     environment:
-      SAVE_FRAME: True
+      SAVE_FRAME: False
       LOAD_FRAME: False
+      FRAME_FPS_DELAY: 30
     devices:
       - ${CAMERA_PATH:-/dev/video0}:/dev/video0
     # Match the host system's video GID (check with `stat -c "%g" /dev/video0`)

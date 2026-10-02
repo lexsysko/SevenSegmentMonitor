@@ -5,9 +5,10 @@ from queue import Queue
 from threading import Event
 
 import cv2
-from SevenSegmentMonitor.settings import THRESHOLD_ON_STATE
+from SevenSegmentMonitor.settings import THRESHOLD_ON_STATE, LOGLEVEL
+from SevenSegmentMonitor.vision.vision_libs import show_or_save
 from SevenSegmentMonitor.vision.vision_process import process_and_annotate, process_frame
-from SevenSegmentMonitor.tools import is_headless
+from SevenSegmentMonitor.tools import is_headless, is_debug
 
 logger = logging.getLogger(__name__)
 
@@ -22,18 +23,19 @@ def vision_worker_thread(frame_queue: Queue, db_queue: Queue, stop_event: Event)
         except queue.Empty:
             continue
 
-        if not is_headless():
+        if is_debug():
             readout, frames = process_and_annotate(frame)
             # Native GUI window rendering
             for i, frame in enumerate(frames):
-                cv2.imshow(f"7-Segment Display Monitor ({i})", frame)
+                show_or_save(f"7-Segment Display Monitor ({i})", frame)
 
             # cv2.waitKey is REQUIRED for cv2.imshow to update the window frame
             # Pressing 'q' signals all threads to stop
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                logger.info("Quit signal received from OpenCV GUI.")
-                stop_event.set()
-                break
+            if not is_headless():
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    logger.info("Quit signal received from OpenCV GUI.")
+                    stop_event.set()
+                    break
         else:
             readout = process_frame(frame)
 
