@@ -1,6 +1,7 @@
-from os import environ, mkdir
+from os import environ
 from pathlib import Path
 
+from SevenSegmentMonitor.enums import MaskType
 from dotenv import load_dotenv
 
 from SevenSegmentMonitor import __version__
@@ -54,6 +55,7 @@ DEBUG_FOLDER.mkdir(parents=True, exist_ok=True)
 
 FRAME_FPS_DELAY: float = float(environ.get("FRAME_FPS_DELAY", 1))
 
+ROTATE_FIXED_FRAME_ANGLE: float | None = float(_a) if (_a := environ.get("ROTATE_FIXED_FRAME_ANGLE")) else None
 # if ROTATE_FRAME_ANGLE is None then use Autorotate
 ROTATE_FRAME_ANGLE: float | None = float(_a) if (_a := environ.get("ROTATE_FRAME_ANGLE")) else None
 DIMMED_BRIGHTNESS: float | None = float(_a) if (_a := environ.get("DIMMED_BRIGHTNESS")) else None
@@ -64,7 +66,13 @@ RED_HSV_RANGE_2_LOW: tuple = str_tuple(environ.get("RED_HSV_RANGE_2_LOW"), (160,
 RED_HSV_RANGE_2_HIGH: tuple = str_tuple(environ.get("RED_HSV_RANGE_2_HIGH"), (180, 255, 255))
 
 WITHOUT_GREEN_RANGE: tuple = str_tuple(environ.get("WITHOUT_GREEN_RANGE"), (220, 225))
+RED_ADAPTIVE_RANGE: tuple = str_tuple(environ.get("RED_ADAPTIVE_RANGE"), (30, 255))
 
+try:
+    VISION_MASK_TYPE: MaskType = MaskType(environ.get("VISION_MASK_TYPE", MaskType.WITHOUT_GREEN.value).lower().strip())
+except ValueError as e:
+    print(f"VISION_MASK_TYPE value {e} of {(',').join(MaskType.__members__.keys())}")
+    exit(1)
 
 SMALL_COMPONENT_AREA: int | None = int(_a) if (_a := environ.get("SMALL_COMPONENT_AREA")) else None
 

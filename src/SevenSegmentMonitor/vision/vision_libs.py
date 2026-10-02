@@ -11,51 +11,17 @@ from SevenSegmentMonitor.settings import (
     NORMALIZED_DIGITS_HEIGHT,
     DIGIT_SHEAR_ANGLE,
     DEBUG_FOLDER,
-    RED_HSV_RANGE_1_LOW,
-    RED_HSV_RANGE_1_HIGH,
-    RED_HSV_RANGE_2_LOW,
-    RED_HSV_RANGE_2_HIGH,
-    WITHOUT_GREEN_RANGE,
+    ROTATE_FIXED_FRAME_ANGLE,
 )
 from SevenSegmentMonitor.tools import is_headless
+from SevenSegmentMonitor.vision.constants import DIGIT_MAP, SEGMENTS_REL
+from SevenSegmentMonitor.vision.vision_masks import make_binary_otsu_mask
 
 logger = logging.getLogger(__name__)
 
-DIGIT_MAP = {
-    (1, 1, 1, 1, 1, 1, 0): "0",
-    (0, 1, 1, 0, 0, 0, 0): "1",
-    (1, 1, 0, 1, 1, 0, 1): "2",
-    (1, 1, 1, 1, 0, 0, 1): "3",
-    (0, 1, 1, 0, 0, 1, 1): "4",
-    (1, 0, 1, 1, 0, 1, 1): "5",
-    (1, 0, 1, 1, 1, 1, 1): "6",
-    (1, 1, 1, 0, 0, 0, 0): "7",
-    (1, 1, 1, 1, 1, 1, 1): "8",
-    (1, 1, 1, 1, 0, 1, 1): "9",
-}
-
-# Relative segment windows (x, y, w, h) in 0..1
-# Order: a(top), b(top-right), c(bottom-right), d(bottom), e(bottom-left), f(top-left), g(middle)
-SEGMENTS_REL = [
-    (0.18, 0.02, 0.64, 0.15),  # a
-    (0.62, 0.12, 0.34, 0.31),  # b
-    (0.62, 0.53, 0.34, 0.31),  # c
-    (0.18, 0.83, 0.64, 0.14),  # d
-    (0.04, 0.53, 0.34, 0.31),  # e
-    (0.04, 0.12, 0.34, 0.31),  # f
-    (0.20, 0.42, 0.50, 0.15),  # g
-]
-
-
-def make_mask(frame: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return mask
-
 
 def tilt_from_contour(mask: np.ndarray) -> float:
-    cnts, _ = cv2.findContours(make_mask(mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts, _ = cv2.findContours(make_binary_otsu_mask(mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
         return 0.0
     c = max(cnts, key=cv2.contourArea)
@@ -99,45 +65,6 @@ def deskew_anchor(mask: np.ndarray, shear_angle: float = 9.0, anchor: str = "bot
     # x' = x + t*(y - y0)  -> the row y0 does not move
     M = np.float32([[1, t, -t * y0], [0, 1, 0]])
     return cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-
-
-def make_red_mask(frame: np.ndarray) -> np.ndarray:
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    m1 = cv2.inRange(hsv, RED_HSV_RANGE_1_LOW, RED_HSV_RANGE_1_HIGH)
-    m2 = cv2.inRange(hsv, RED_HSV_RANGE_2_LOW, RED_HSV_RANGE_2_HIGH)
-    mask = cv2.bitwise_or(m1, m2)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-    return mask
-
-
-def make_red_mask_adaptive(frame: np.ndarray) -> np.ndarray:
-    # Convert frame to signed integer to prevent negative underflow
-    b, g, r = cv2.split(frame.astype(np.int16))
-
-    # Subtract max(G, B) from R. Red pixels will produce high positive values.
-    # Non-red bright pixels (white lights, green LEDs) will produce <= 0.
-    red_dominance = np.clip(r - np.maximum(g, b), 0, 255).astype(np.uint8)
-
-    # Threshold the dominant red pixels (adjust '30' if needed)
-    _, mask = cv2.threshold(red_dominance, 30, 255, cv2.THRESH_BINARY)
-
-    # Close small gaps in segments
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-
-    return mask
-
-
-def make_without_green_mask(frame: np.ndarray) -> np.ndarray:
-    b, g, r = cv2.split(frame)
-    gray_no_green = ((r.astype(np.uint16) + b.astype(np.uint16)) // 2).astype(np.uint8)
-    _, mask_bright = cv2.threshold(gray_no_green, WITHOUT_GREEN_RANGE[0], WITHOUT_GREEN_RANGE[1], cv2.THRESH_BINARY)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    mask = cv2.morphologyEx(mask_bright, cv2.MORPH_CLOSE, kernel, iterations=1)
-
-    return mask
 
 
 def is_probably_one(roi: np.ndarray) -> bool:
@@ -352,9 +279,13 @@ def preprocess_img(
     frame: np.ndarray,
     rotate_frame_angle: float | None = ROTATE_FRAME_ANGLE,
     dimmed_brightness: float | None = DIMMED_BRIGHTNESS,
+    rotate_fixed_frame_angle: float | None = ROTATE_FIXED_FRAME_ANGLE,
 ) -> np.ndarray:
+    if rotate_fixed_frame_angle != 0:
+        frame = rotate_frame(frame, angle=rotate_fixed_frame_angle)
     if rotate_frame_angle != 0:
         frame = rotate_frame(frame, angle=rotate_frame_angle)
+
     if dimmed_brightness:
         frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=dimmed_brightness)
     return frame

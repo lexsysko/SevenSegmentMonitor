@@ -22,4 +22,9 @@ RUNNING  DEBUG...
 2026-10-02 03:39:06 [DEBUG] SevenSegmentMonitor.vision.vision_libs: Auto rotated by 0.00deg
 2026-10-02 03:39:06 [DEBUG] SevenSegmentMonitor.services.vision_worker: readout='233 001'
 2026-10-02 03:39:06 [INFO] SevenSegmentMonitor.services.db_writer_worker: [DB] LOGGED: [1790912346] state=False, raw_data='233 001'
+...
+2026-10-02 03:45:15 [INFO] SevenSegmentMonitor.services.db_writer_worker: [DB] LOGGED: [1790912715] state=False, raw_data='237 001'
+2026-10-02 03:45:23 [INFO] SevenSegmentMonitor.handler_signal: 
+[System] Received signal 15. Triggering graceful shutdown...
+2026-10-02 03:45:24 [INFO] SevenSegmentMonitor.services.db_writer_worker: [DB] Worker stopped.
 ```

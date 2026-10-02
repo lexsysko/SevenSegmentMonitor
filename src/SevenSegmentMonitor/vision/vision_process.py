@@ -7,13 +7,12 @@ from SevenSegmentMonitor.vision.vision_libs import (
     find_digit_candidates,
     decode_digit,
     preprocess_img,
-    make_red_mask,
     extract_all_rows,
     make_debug_grid,
     remove_small_components,
     show_or_save,
-    make_without_green_mask,
 )
+from SevenSegmentMonitor.vision.vision_masks import make_mask
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +22,7 @@ logger = logging.getLogger(__name__)
 def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
     """Full pipeline with visualization (GUI path)."""
     frame = preprocess_img(frame)
-    # mask = make_red_mask(frame)
-    mask = make_without_green_mask(frame)
+    mask = make_mask(frame)
     if SMALL_COMPONENT_AREA is not None:
         mask = remove_small_components(mask, min_area=SMALL_COMPONENT_AREA)
 
@@ -81,8 +79,7 @@ def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
 def process_frame(frame: np.ndarray) -> str:
     """Headless version – same logic, no drawing."""
     frame = preprocess_img(frame)
-    # mask = make_red_mask(frame)
-    mask = make_without_green_mask(frame)
+    mask = make_mask(frame)
 
     candidates = find_digit_candidates(mask)
     rois, _ = extract_all_rows(mask, candidates, num_digits=NUM_DIGITS_PER_ROW, num_rows=NUM_DIGITS_ROWS)
