@@ -281,7 +281,7 @@ def preprocess_img(
     dimmed_brightness: float | None = DIMMED_BRIGHTNESS,
     rotate_fixed_frame_angle: float | None = ROTATE_FIXED_FRAME_ANGLE,
 ) -> np.ndarray:
-    if rotate_fixed_frame_angle != 0:
+    if rotate_fixed_frame_angle is not None:
         frame = rotate_frame(frame, angle=rotate_fixed_frame_angle)
     if rotate_frame_angle != 0:
         frame = rotate_frame(frame, angle=rotate_frame_angle)
