@@ -2,7 +2,7 @@ import logging
 
 import cv2
 import numpy as np
-from SevenSegmentMonitor.settings import DIGIT_DENSITY_THRESH, NUM_DIGITS_PER_ROW, NUM_DIGITS_ROWS
+from SevenSegmentMonitor.settings import DIGIT_DENSITY_THRESH, NUM_DIGITS_PER_ROW, NUM_DIGITS_ROWS, SMALL_COMPONENT_AREA
 from SevenSegmentMonitor.vision.vision_libs import (
     find_digit_candidates,
     extract_both_rows,
@@ -10,6 +10,9 @@ from SevenSegmentMonitor.vision.vision_libs import (
     preprocess_img,
     make_red_mask,
     extract_all_rows,
+    canvas_scaled,
+    make_debug_grid,
+    remove_small_components,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,6 +24,8 @@ def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
     """Full pipeline with visualization (GUI path)."""
     frame = preprocess_img(frame)
     mask = make_red_mask(frame)
+    if SMALL_COMPONENT_AREA is not None:
+        mask = remove_small_components(mask, min_area=SMALL_COMPONENT_AREA)
 
     candidates = find_digit_candidates(mask)
     # rois, boxes = extract_both_rows(mask, candidates, num_digits=NUM_DIGITS_PER_ROW)
@@ -28,11 +33,23 @@ def process_and_annotate(frame: np.ndarray) -> tuple[str, tuple]:
 
     chars = []
     digit_boxes = []
+    im_debug = True
+    debug_digit_frames = []
+    usable_w_scale = 0.95 if SMALL_COMPONENT_AREA is None else 1
     for i, roi in enumerate(rois):
-        ch = decode_digit(roi, density_thresh=DIGIT_DENSITY_THRESH, id=i, im_debug=True)
+        ch, debug_digit_frame = decode_digit(
+            roi, density_thresh=DIGIT_DENSITY_THRESH, im_debug=im_debug, usable_w_scale=usable_w_scale
+        )
         chars.append(ch)
         x, y, w, h = boxes[i]
         digit_boxes.append((x, y, w, h, ch))
+        if debug_digit_frame is not None:
+            debug_digit_frames.append(debug_digit_frame)
+
+    if debug_digit_frames:
+        cv2.imshow(
+            f"segments", make_debug_grid(debug_digit_frames, scale=2, rows=NUM_DIGITS_ROWS, cols=NUM_DIGITS_PER_ROW)
+        )
 
     # Format as two groups
     if len(chars) == NUM_DIGITS_ROWS * NUM_DIGITS_PER_ROW:
@@ -66,9 +83,10 @@ def process_frame(frame: np.ndarray) -> str:
     mask = make_red_mask(frame)
 
     candidates = find_digit_candidates(mask)
-    rois, _ = extract_both_rows(mask, candidates, num_digits=3)
+    rois, _ = extract_all_rows(mask, candidates, num_digits=NUM_DIGITS_PER_ROW, num_rows=NUM_DIGITS_ROWS)
+    usable_w_scale = 0.95 if SMALL_COMPONENT_AREA is None else 1
 
-    chars = [decode_digit(r, density_thresh=DIGIT_DENSITY_THRESH) for r in rois]
+    chars = [decode_digit(r, density_thresh=DIGIT_DENSITY_THRESH, usable_w_scale=usable_w_scale)[0] for r in rois]
 
     if len(chars) == 6:
         return f"{''.join(chars[:3])} {''.join(chars[3:])}"

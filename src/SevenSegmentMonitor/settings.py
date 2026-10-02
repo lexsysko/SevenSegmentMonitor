@@ -43,6 +43,8 @@ FRAME_FPS_DELAY: float = float(environ.get("FRAME_FPS_DELAY", 1))
 ROTATE_FRAME_ANGLE: float | None = float(_a) if (_a := environ.get("ROTATE_FRAME_ANGLE")) else None
 DIMMED_BRIGHTNESS: float = float(environ.get("DIMMED_BRIGHTNESS", -10))
 
+SMALL_COMPONENT_AREA: int | None = int(_a) if (_a := environ.get("SMALL_COMPONENT_AREA")) else None
+
 DIGIT_DENSITY_THRESH: float = float(environ.get("DIGIT_DENSITY_THRESH", 0.15))
 DIGIT_SHEAR_ANGLE: float = float(environ.get("DIGIT_SHEAR_ANGLE", -7))
 

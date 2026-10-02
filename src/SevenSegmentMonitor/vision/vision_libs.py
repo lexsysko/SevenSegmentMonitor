@@ -115,10 +115,12 @@ def is_probably_one(roi: np.ndarray) -> bool:
     return right_d > 0.28 and left_d < 0.06
 
 
-def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_debug: bool = False) -> str:
+def decode_digit(
+    roi: np.ndarray, density_thresh: float = 0.13, im_debug: bool = False, usable_w_scale: float = 0.95
+) -> tuple[str, np.ndarray | None]:
     h, w = roi.shape[:2]
     if h < 10 or w < 6:
-        return "?"
+        return "?", None
 
     if NORMALIZE_DIGITS_HEIGHT:
         # 1. normalize to a fixed height, keep the aspect ratio
@@ -131,7 +133,7 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_
         roi = deskew_centroid(roi, shear_angle=DIGIT_SHEAR_ANGLE)
 
     # ignore decimal point area on the right
-    usable_w = int(w * 0.90)
+    usable_w = int(w * usable_w_scale)
     roi = roi[:, :usable_w]
     h, w = roi.shape[:2]
 
@@ -140,7 +142,7 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_
         h, w = roi.shape[:2]
 
     if is_probably_one(roi):
-        return "1"
+        return "1", None
 
     debug: np.ndarray | None = None
 
@@ -161,10 +163,7 @@ def decode_digit(roi: np.ndarray, density_thresh: float = 0.13, id: int = 0, im_
         if debug is not None:
             cv2.rectangle(debug, (x1, y1), (x2, y2), color, 1)
 
-    if debug is not None:
-        cv2.imshow(f"segments_{id}", debug)
-
-    return DIGIT_MAP.get(tuple(states), "?")
+    return DIGIT_MAP.get(tuple(states), "?"), debug
 
 
 def merge_vertical_fragments(
@@ -322,3 +321,100 @@ def preprocess_img(
     if dimmed_brightness:
         frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=dimmed_brightness)
     return frame
+
+
+def remove_small_components(
+    image: np.ndarray,
+    min_area: int = 5,
+) -> np.ndarray:
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        image,
+        connectivity=8,
+    )
+
+    result = np.zeros_like(image)
+
+    for label in range(1, num_labels):
+        area = stats[label, cv2.CC_STAT_AREA]
+
+        if area >= min_area:
+            result[labels == label] = 255
+
+    return result
+
+
+def canvas_scaled(frame: np.ndarray, canvas_w: int = 400, canvas_h: int = 400, scale: int = 3):
+
+    h, w = frame.shape[:2]
+
+    # Scale image
+    scaled = cv2.resize(
+        frame,
+        (w * scale, h * scale),
+        interpolation=cv2.INTER_NEAREST,
+    )
+
+    # Gray canvas
+    canvas = np.full(
+        (canvas_h, canvas_w, 3),
+        128,
+        dtype=np.uint8,
+    )
+
+    # Center
+    sh, sw = scaled.shape[:2]
+    x = (canvas_w - sw) // 2
+    y = (canvas_h - sh) // 2
+
+    canvas[y : y + sh, x : x + sw] = scaled
+
+    return canvas
+
+
+def make_debug_grid(
+    frames: list[np.ndarray],
+    rows: int = 2,
+    cols: int = 3,
+    cell_size: tuple[int, int] = (160, 160),
+    scale: int = 1,
+    bg: int = 128,
+) -> np.ndarray:
+    cell_w, cell_h = cell_size
+
+    canvas = np.full(
+        (rows * cell_h, cols * cell_w, 3),
+        bg,
+        dtype=np.uint8,
+    )
+
+    for i, frame in enumerate(frames[: rows * cols]):
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        h, w = frame.shape[:2]
+
+        # Scale, but keep inside the cell
+        s = min(
+            scale,
+            cell_w / w,
+            cell_h / h,
+        )
+
+        sw = max(1, int(w * s))
+        sh = max(1, int(h * s))
+
+        frame = cv2.resize(
+            frame,
+            (sw, sh),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        row = i // cols
+        col = i % cols
+
+        x = col * cell_w + (cell_w - sw) // 2
+        y = row * cell_h + (cell_h - sh) // 2
+
+        canvas[y : y + sh, x : x + sw] = frame
+
+    return canvas
